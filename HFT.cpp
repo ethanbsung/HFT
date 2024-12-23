@@ -39,10 +39,6 @@ public:
         connectionCV_.notify_one();
     }
 
-    void error(int id, int errorCode, const std::string& errorString) override {
-        std::cerr << "Error. Id: " << id << ", Code: " << errorCode << ", Msg: " << errorString << std::endl;
-    }
-
     // Other EWrapper methods can be overridden as needed
     void connectionClosed() override {
         std::cout << "Connection Closed." << std::endl;
