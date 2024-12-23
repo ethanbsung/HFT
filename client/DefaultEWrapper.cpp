@@ -10,7 +10,7 @@ void DefaultEWrapper::tickOptionComputation( TickerId tickerId, TickType tickTyp
 	   double optPrice, double pvDividend, double gamma, double vega, double theta, double undPrice) { }
 void DefaultEWrapper::tickGeneric(TickerId tickerId, TickType tickType, double value) { }
 void DefaultEWrapper::tickString(TickerId tickerId, TickType tickType, const std::string& value) { }
-void DefaultEWrapper::tickEFP(TickerId tickerId, TickType tickType, double basisPoints, const std::string& formattedBasisPoints,
+void DefaultEWrapper::tickEFP(TickerId tickerId,  TickType tickType, double basisPoints, const std::string& formattedBasisPoints,
 	   double totalDividends, int holdDays, const std::string& futureLastTradeDate, double dividendImpact, double dividendsToLastTradeDate) { }
 void DefaultEWrapper::orderStatus( OrderId orderId, const std::string& status, Decimal filled,
 	   Decimal remaining, double avgFillPrice, int permId, int parentId,
