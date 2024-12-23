@@ -13,6 +13,7 @@
 #include <vector>
 #include <set>
 #include <map>
+using namespace std;
 
 // Define IBString if not defined
 #ifndef IBSTRING_DEFINED
@@ -336,7 +337,7 @@ Contract createMESContract() {
     Contract contract;
     contract.symbol = "MES";
     contract.secType = "FUT";
-    contract.exchange = "GLOBEX";
+    contract.exchange = "CME";
     contract.currency = "USD";
     contract.lastTradeDateOrContractMonth = "202503"; // March 2025
     return contract;
@@ -362,8 +363,8 @@ int main() {
     // Request Market Data (Bid and Ask)
     // The tickerId can be any unique identifier
     int tickerId = 1001;
-    TagValueListSPtr tagValues = std::make_shared<std::vector<TagValue>>();
-    marketMaker.getClient().reqMktData(tickerId, mesContract, "151", false, false, tagValues);
+    const TagValueListSPtr tagValues = std::make_shared<std::vector<TagValue>>();
+    marketMaker.getClient().reqMktData(tickerId, mesContract, "151", false, false, nullptr);
 
     // Keep the application running to receive callbacks
     std::cout << "Press Ctrl+C to exit..." << std::endl;

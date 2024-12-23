@@ -1,3 +1,6 @@
 {
-    "cmake.sourceDirectory": "/Users/ethansung/quant/HFT/client"
+    "cmake.sourceDirectory": "/Users/ethansung/quant/HFT/client",
+    "files.associations": {
+        "vector": "cpp"
+    }
 }
