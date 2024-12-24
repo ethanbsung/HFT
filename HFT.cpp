@@ -4,6 +4,7 @@
 #include "EClientSocket.h"
 #include "Contract.h"
 #include "Order.h"
+#include "TagValue.h"
 #include <iostream>
 #include <thread>
 #include <atomic>
@@ -20,9 +21,6 @@ using namespace std;
 typedef std::string IBString;
 #define IBSTRING_DEFINED
 #endif
-
-// Forward declaration for TagValueListSPtr
-typedef std::shared_ptr<std::vector<TagValue>> TagValueListSPtr;
 
 // MarketMaker class inheriting from EWrapper
 class MarketMaker : public EWrapper {
@@ -363,8 +361,8 @@ int main() {
     // Request Market Data (Bid and Ask)
     // The tickerId can be any unique identifier
     int tickerId = 1001;
-    const TagValueListSPtr tagValues = std::make_shared<std::vector<TagValue>>();
-    marketMaker.getClient().reqMktData(tickerId, mesContract, "151", false, false, nullptr);
+    const TagValueListSPtr tagValues = std::make_shared<std::vector<TagValueSPtr>>();
+    marketMaker.getClient().reqMktData(tickerId, mesContract, "151", false, false, tagValues);
 
     // Keep the application running to receive callbacks
     std::cout << "Press Ctrl+C to exit..." << std::endl;
