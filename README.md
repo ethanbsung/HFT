@@ -1,1 +1,0 @@
-Developing a market making strategy to trade MES futures using C++
