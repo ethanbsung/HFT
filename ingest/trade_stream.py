@@ -8,7 +8,7 @@ from utils.quote_engine import QuoteEngine
 class Tradestream:
     def __init__(self, symbol: str = "btcusdt", quote_engine=None):
         self._symbol = symbol
-        self._uri = f"wss://stream.binance.us:9443/ws/{self._symbol}@trade"
+        self._uri = f"wss://stream.binance.com:9443/ws/{self._symbol}@trade"
         self.quote_engine = quote_engine
     
     async def load_data(self):
@@ -25,7 +25,6 @@ class Tradestream:
                         "side" : "buy" if not data["m"] else "sell"
                     }
                     if self.quote_engine:
-                        print(f"Simulating fill for trade: {trade}")
                         self.quote_engine.simulate_fill(
                             trade_price=trade["price"],
                             trade_qty=trade["quantity"],

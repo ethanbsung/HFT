@@ -2,14 +2,14 @@ import pandas as pd
 import asyncio
 import json
 import websockets
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from utils.quote_engine import QuoteEngine, Order
 
 class Orderbookstream:
     def __init__(self, symbol: str = "btcusdt"):
         self._symbol = symbol
-        self._uri = "wss://stream.binance.us:9443/ws/btcusdt@depth10@100ms"
+        self._uri = "wss://stream.binance.com:9443/ws/btcusdt@depth10@100ms"
         self.orderbook_raw = []
         self.orderbook_features = []
         self.batch_size = 1000
@@ -32,6 +32,11 @@ class Orderbookstream:
                     data = json.loads(await ws.recv())
                     bids = data["bids"]
                     asks = data["asks"]
+                    timestamp = datetime.now(timezone.utc)
+
+                    orderbook = {'bids': bids, 'asks': asks, 'timestamp': timestamp}
+
+                    self.quote_engine.update_order_with_orderbook(orderbook)
 
                     # Calculate metrics
                     best_bid_price = float(bids[0][0])
@@ -41,18 +46,47 @@ class Orderbookstream:
                     total_bid_volume = sum(float(b[1]) for b in bids)
                     total_ask_volume = sum(float(a[1]) for a in asks)
                     obi = (total_bid_volume - total_ask_volume) / (total_bid_volume + total_ask_volume)
-                    
-                    # Create timestamp
-                    timestamp = datetime.now()
+
+                    recent_cancel = False
+                    ord_ = self.quote_engine.get_open_order()
+                    if ord_ is None and hasattr(self.quote_engine, 'last_cancel_time') and self.quote_engine.last_cancel_time is not None:
+                        recent_cancel = (timestamp - self.quote_engine.last_cancel_time).total_seconds() < 0.3
+
+                    if recent_cancel:
+                        signal = "hold"
+                        self.orderbook_raw.append({
+                            'timestamp': orderbook['timestamp'],
+                            'bids': bids,
+                            'asks': asks
+                        })
+                        self.orderbook_features.append({
+                            'timestamp': orderbook['timestamp'],
+                            'best_bid': best_bid_price,
+                            'best_ask': best_ask_price,
+                            'spread': spread,
+                            'obi': obi,
+                            'signal': signal
+                        })
+                        print(
+                            f"[{timestamp.isoformat()}] "
+                            f"OBI: {obi:>6.3f} | Signal: {signal:<4} | "
+                            f"Bid: {best_bid_price:>10,.2f} | Ask: {best_ask_price:>10,.2f} | "
+                            f"Spread: {spread:>6.2f} | "
+                            f"Vol (Bid): {total_bid_volume:.5f} | Vol (Ask): {total_ask_volume:.5f}"
+                        )
+                        self.quote_engine.print_status(mid_price=(best_bid_price + best_ask_price) / 2)
+                        continue
 
                     if obi > 0.3 and not self.quote_engine.get_open_order():
                         signal = "buy"
-                        bid_volume_ahead = float(bids[0][1])
-                        self.quote_engine.place_order("buy", best_bid_price, 0.01, queue_ahead=bid_volume_ahead)
+                        success = self.quote_engine.place_order("buy", best_bid_price, 0.01, orderbook)
+                        if not success:
+                            signal = "hold"
                     elif obi < -0.3 and not self.quote_engine.get_open_order():
                         signal = "sell"
-                        ask_volume_ahead = float(asks[0][1])
-                        self.quote_engine.place_order("sell", best_ask_price, 0.01, queue_ahead=ask_volume_ahead)
+                        success = self.quote_engine.place_order("sell", best_ask_price, 0.01, orderbook)
+                        if not success:
+                            signal = "hold"
                     else:
                         signal = "hold"
                         # Only cancel orders if OBI has moved significantly in the opposite direction
@@ -62,14 +96,14 @@ class Orderbookstream:
                                 self.quote_engine.cancel_order()
 
                     self.orderbook_raw.append({
-                        'timestamp': timestamp,
+                        'timestamp': orderbook['timestamp'],
                         'bids': bids,
                         'asks': asks
                     })
                     
                     # Append to orderbook list
                     self.orderbook_features.append({
-                        'timestamp': timestamp,
+                        'timestamp': orderbook['timestamp'],
                         'best_bid': best_bid_price,
                         'best_ask': best_ask_price,
                         'spread': spread,
@@ -77,7 +111,13 @@ class Orderbookstream:
                         'signal': signal
                     })
                     
-                    print(f"OBI: {obi} | Signal: {signal} | Best bid price: {best_bid_price} | Best ask price: {best_ask_price} | Spread: {spread} | Total bid volume: {total_bid_volume} | Total ask volume: {total_ask_volume}")
+                    print(
+                        f"[{timestamp.isoformat()}] "
+                        f"OBI: {obi:>6.3f} | Signal: {signal:<4} | "
+                        f"Bid: {best_bid_price:>10,.2f} | Ask: {best_ask_price:>10,.2f} | "
+                        f"Spread: {spread:>6.2f} | "
+                        f"Vol (Bid): {total_bid_volume:.5f} | Vol (Ask): {total_ask_volume:.5f}"
+                    )
                     
                     # Save to parquet every 1000 rows
                     if len(self.orderbook_features) >= self.batch_size:
