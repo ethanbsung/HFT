@@ -4,6 +4,7 @@ import json
 import websockets
 from datetime import datetime
 import os
+from utils.quote_engine import QuoteEngine, Order
 
 class Orderbookstream:
     def __init__(self, symbol: str = "btcusdt"):
@@ -13,6 +14,7 @@ class Orderbookstream:
         self.orderbook_features = []
         self.batch_size = 1000
         self.file_counter = 0
+        self.quote_engine = QuoteEngine()
         
         # Create data directory if it doesn't exist
         os.makedirs("data/orderbooks", exist_ok=True)
@@ -43,6 +45,22 @@ class Orderbookstream:
                     # Create timestamp
                     timestamp = datetime.now()
 
+                    if obi > 0.3 and not self.quote_engine.get_open_order():
+                        signal = "buy"
+                        bid_volume_ahead = float(bids[0][1])
+                        self.quote_engine.place_order("buy", best_bid_price, 0.01, queue_ahead=bid_volume_ahead)
+                    elif obi < -0.3 and not self.quote_engine.get_open_order():
+                        signal = "sell"
+                        ask_volume_ahead = float(asks[0][1])
+                        self.quote_engine.place_order("sell", best_ask_price, 0.01, queue_ahead=ask_volume_ahead)
+                    else:
+                        signal = "hold"
+                        # Only cancel orders if OBI has moved significantly in the opposite direction
+                        if self.quote_engine.get_open_order():
+                            order = self.quote_engine.get_open_order()
+                            if (order.side == "buy" and obi < -0.1) or (order.side == "sell" and obi > 0.1):
+                                self.quote_engine.cancel_order()
+
                     self.orderbook_raw.append({
                         'timestamp': timestamp,
                         'bids': bids,
@@ -58,19 +76,14 @@ class Orderbookstream:
                         'obi': obi,
                         'signal': signal
                     })
-
-                    if obi > 0.3:
-                        signal = "buy"
-                    elif obi < -0.3:
-                        signal = "sell"
-                    else:
-                        signal = "hold"
                     
                     print(f"OBI: {obi} | Signal: {signal} | Best bid price: {best_bid_price} | Best ask price: {best_ask_price} | Spread: {spread} | Total bid volume: {total_bid_volume} | Total ask volume: {total_ask_volume}")
                     
                     # Save to parquet every 1000 rows
-                    if len(self.orderbook) >= self.batch_size:
+                    if len(self.orderbook_features) >= self.batch_size:
                         await self._save_to_parquet()
+                    
+                    self.quote_engine.print_status(mid_price=(best_bid_price + best_ask_price) / 2)
 
                 except Exception as e:
                     print(f"Exception Error: {e}")
