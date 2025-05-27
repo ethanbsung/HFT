@@ -10,17 +10,17 @@ class Order:
         self.current_queue = queue_ahead
         self.filled_qty = 0
         self.remaining_qty = size
-        self.filled = False
         self.entry_time = entry_time or datetime.now(timezone.utc)
         self.order_id = f"{side}_{price}_{self.entry_time.timestamp()}"
+        # Track our original price level for queue maintenance
+        self.original_price_level = price
 
-    def fill(self):
-        self.filled = True
 
 class QuoteEngine:
     TICK = 0.01
-    MAX_TICKS_AWAY = 3
-    ORDER_TTL_SEC = 5.0
+    MAX_TICKS_AWAY = 8
+    ORDER_TTL_SEC = 15.0
+    MIN_ORDER_REPLACE_INTERVAL = 0.5  # Don't replace orders more frequently than this
 
     def __init__(self, max_position_size=0.05):
         self.position = 0
@@ -30,160 +30,247 @@ class QuoteEngine:
         self.open_ask_order = None
         self.last_orderbook = None
         self.last_cancel_time = None
+        self.last_manual_cancel_time = None
         self.max_position_size = max_position_size
+        self.last_bid_replace_time = None
+        self.last_ask_replace_time = None
+        # Track when meaningful events happen for status printing
+        self.last_status_print_time = None
+        self.status_print_events = set()  # Track what events trigger status prints
+
+    def _should_replace_order(self, side, target_price, current_order):
+        """Check if we should replace an existing order"""
+        if not current_order:
+            return True
+            
+        now = datetime.now(timezone.utc)
+        
+        # Check minimum replace interval
+        if side == "buy" and self.last_bid_replace_time:
+            if (now - self.last_bid_replace_time).total_seconds() < self.MIN_ORDER_REPLACE_INTERVAL:
+                return False
+        elif side == "sell" and self.last_ask_replace_time:
+            if (now - self.last_ask_replace_time).total_seconds() < self.MIN_ORDER_REPLACE_INTERVAL:
+                return False
+        
+        # Only replace if price difference is significant
+        if not self._same_price_level(target_price, current_order.price):
+            price_diff_ticks = abs(target_price - current_order.price) / self.TICK
+            return price_diff_ticks >= 1.0  # Only replace if >1 tick difference
+            
+        return False
 
     def place_order(self, side, price, size, current_orderbook):
         """
-        Place order only if price matches current best bid/ask
+        Intelligently place or maintain orders
         """
-
         if side == "buy":
             if self.position + size > self.max_position_size:
-                print(f"Cannot place {side} order: exceeds max position size {self.max_position_size}. Current position: {self.position}, order size: {size}")
                 return False
+                
+            # Check if we should replace existing order
+            if not self._should_replace_order(side, price, self.open_bid_order):
+                return False
+                
             if self.open_bid_order:
-                self.cancel_order(side="buy")
+                self.cancel_order(side="buy", manual_cancel=False, reason="replace")
+            self.last_bid_replace_time = datetime.now(timezone.utc)
             
         elif side == "sell":
             if self.position - size < -self.max_position_size:
-                print(f"Cannot place {side} order: exceeds max position size {self.max_position_size}. Current position: {self.position}, order size: {size}")
                 return False
+                
+            # Check if we should replace existing order
+            if not self._should_replace_order(side, price, self.open_ask_order):
+                return False
+                
             if self.open_ask_order:
-                self.cancel_order(side="sell")
+                self.cancel_order(side="sell", manual_cancel=False, reason="replace")
+            self.last_ask_replace_time = datetime.now(timezone.utc)
         else:
-            print(f"Invalid side for place_order: {side}")
             return False
 
+        # Calculate queue position more intelligently
         queue_ahead = self._calculate_queue_position(side, price, current_orderbook)
         if queue_ahead is None:
-            # print(f"Cannot place {side} order at {price} - not at best price level")
             return False
         
         new_order = Order(side, price, size, queue_ahead)
         if side == "buy":
             self.open_bid_order = new_order
             print(f"Placed BUY order: {size} @ {price}, queue ahead: {queue_ahead:.6f}")
+            self.status_print_events.add("order_placed")
         elif side == "sell":
             self.open_ask_order = new_order
             print(f"Placed SELL order: {size} @ {price}, queue ahead: {queue_ahead:.6f}")
+            self.status_print_events.add("order_placed")
         return True
         
     def _calculate_queue_position(self, side, price, orderbook):
         """
-        Only allow orders at best bid/ask, calculate realistic queue position
-        Returns None if price is not at the best level for the given side.
+        Calculate queue position - handle both existing and new price levels
         """
         bids = orderbook['bids']
         asks = orderbook['asks']
 
         if not bids or not asks:
-            print("Orderbook is missing bids or asks.")
             return None
 
         if side == "buy":
+            # Find our price level in the bid stack
+            for i, (bid_price, bid_vol) in enumerate(bids):
+                if self._same_price_level(price, float(bid_price)):
+                    # We're at this price level - assume we join at back of queue
+                    queue_vol = float(bid_vol) * 0.85  # Assume we're behind 85% of existing volume
+                    return max(0.005, queue_vol)  # Minimum queue of 0.005
+            
+            # Price not found in current orderbook - estimate based on market behavior
             best_bid = float(bids[0][0])
-            if not self._same_price_level(price, best_bid):
-                print(f"Cannot place BUY order at {price}. Best bid is {best_bid}.")
-                return None
-            return float(bids[0][1])
+            if price <= best_bid and (best_bid - price) <= self.MAX_TICKS_AWAY * self.TICK:
+                ticks_away = round((best_bid - price) / self.TICK)
+                
+                if ticks_away == 0:  # Joining at best bid
+                    # Estimate queue based on typical best bid volume
+                    best_bid_vol = float(bids[0][1])
+                    return max(0.01, best_bid_vol * 0.4)  # Behind 40% of best bid volume
+                elif ticks_away == 1:  # One tick behind best
+                    return 0.005  # Small queue for near-best levels
+                else:  # Further away
+                    return 0.002  # Very small queue for distant levels
+            return None
         
         elif side == "sell":
+            # Find our price level in the ask stack
+            for i, (ask_price, ask_vol) in enumerate(asks):
+                if self._same_price_level(price, float(ask_price)):
+                    queue_vol = float(ask_vol) * 0.85  # Assume we're behind 85% of existing volume
+                    return max(0.005, queue_vol)  # Minimum queue of 0.005
+            
+            # Price not found in current orderbook
             best_ask = float(asks[0][0])
-            if not self._same_price_level(price, best_ask):
-                print(f"Cannot place SELL order at {price}. Best ask is {best_ask}.")
-                return None
-            return float(asks[0][1])
+            if price >= best_ask and (price - best_ask) <= self.MAX_TICKS_AWAY * self.TICK:
+                ticks_away = round((price - best_ask) / self.TICK)
+                
+                if ticks_away == 0:  # Joining at best ask
+                    best_ask_vol = float(asks[0][1])
+                    return max(0.01, best_ask_vol * 0.4)  # Behind 40% of best ask volume
+                elif ticks_away == 1:  # One tick above best
+                    return 0.005  # Small queue for near-best levels
+                else:  # Further away
+                    return 0.002  # Very small queue for distant levels
+            return None
         
         return None
     
     def _update_single_order(self, order: Order, current_orderbook):
-        """Helper function to update a single order (bid or ask)."""
-        if not order or order.filled: # 'filled' might always be False if we cancel/replace
+        """Updated order tracking logic with better queue management."""
+        if not order:
             return
 
+        # Check TTL
         age = (current_orderbook['timestamp'] - order.entry_time).total_seconds()
         if age > self.ORDER_TTL_SEC:
             print(f"Order {order.side} @ {order.price} expired (TTL) — cancelling.")
-            self.cancel_order(side=order.side)
-            return # Order is now None, no further processing
+            self.cancel_order(side=order.side, manual_cancel=False, reason="ttl")
+            return
 
-        # Re-check if order is still valid after potential TTL cancel
-        if not order: return # Should be handled by self.cancel_order setting the attribute to None
+        # Re-check if order still exists after potential TTL cancel
+        if order.side == "buy" and not self.open_bid_order: 
+            return
+        if order.side == "sell" and not self.open_ask_order: 
+            return
 
-        # Check if the specific order (bid or ask) we are updating still exists
-        # This is important because cancel_order above might have nulled it.
-        if order.side == "buy" and not self.open_bid_order: return
-        if order.side == "sell" and not self.open_ask_order: return
-
-
-        price = order.price # The price of our existing order
         bids = current_orderbook['bids']
         asks = current_orderbook['asks']
 
         if not bids or not asks:
-            # print("Orderbook is missing bids or asks during update.") # Can be noisy
             return
 
         current_best_bid = float(bids[0][0])
         current_best_ask = float(asks[0][0])
 
         if order.side == "buy":
-            if not self._same_price_level(price, current_best_bid) and price < current_best_bid:
-                pass # Holding queue for now if not at best but still "valid"
-
-            if self._same_price_level(price, current_best_bid):
-                current_volume_at_level = float(bids[0][1])
-                if hasattr(self, 'last_orderbook') and self.last_orderbook and self.last_orderbook['bids']:
-                    # Find our price level in the last orderbook
-                    old_volume_at_level = 0
-                    for ob_price, ob_vol in self.last_orderbook['bids']:
-                        if self._same_price_level(price, float(ob_price)):
-                            old_volume_at_level = float(ob_vol)
-                            break
-                    
-                    volume_decrease = max(0, old_volume_at_level - current_volume_at_level if self._same_price_level(price, current_best_bid) else 0)
-                    # If our price is still best bid, update queue based on best bid volume change.
-                    # This part needs to be more robust: what if our price is no longer best_bid but was?
-                    # The volume decrease should refer to the specific price level of our order.
-                    
-                    # Simplified: if we are still at best bid, update queue based on best bid volume change.
-                    if self._same_price_level(price, current_best_bid):
-                         volume_decrease_at_best = max(0, float(self.last_orderbook['bids'][0][1]) - current_volume_at_level)
-                         order.current_queue = max(0, order.current_queue - volume_decrease_at_best)
+            # Check if order should be cancelled due to being crossed or too far away
+            if order.price > current_best_bid:  # Our bid is crossed by market
+                print(f"BUY Order @ {order.price} auto-cancelled: crossed by market.")
+                self.cancel_order(side="buy", manual_cancel=False, reason="crossed")
+                return
+            elif (current_best_bid - order.price) > self.MAX_TICKS_AWAY * self.TICK:  # Too far away
+                print(f"BUY Order @ {order.price} auto-cancelled: too far from best bid ({current_best_bid}).")
+                self.cancel_order(side="buy", manual_cancel=False, reason="too_far")
+                return
             
-            # If price drifts too far (e.g., market moves against us, or our order is no longer aggressive enough)
-            elif abs(price - current_best_bid) > self.MAX_TICKS_AWAY * self.TICK and price < current_best_bid : # Our bid is too low / uncompetitive
-                print(f"BUY Order @ {price} auto-cancelled: too far from best bid ({current_best_bid}).")
-                self.cancel_order(side="buy")
-            elif price > current_best_bid: # Our bid is crossed by the market's best bid (should not happen if we only place at best)
-                print(f"BUY Order @ {price} auto-cancelled: crossed by new best bid ({current_best_bid}).")
-                self.cancel_order(side="buy")
+            # Update queue position if we're still in the book
+            self._update_order_queue_position(order, current_orderbook)
             
         elif order.side == "sell":
-            # If our ask is no longer at or near the best ask, cancel it.
-            if not self._same_price_level(price, current_best_ask) and price > current_best_ask:
-                pass # Holding queue for now
-
-            if self._same_price_level(price, current_best_ask):
-                current_volume_at_level = float(asks[0][1])
-                if hasattr(self, 'last_orderbook') and self.last_orderbook and self.last_orderbook['asks']:
-                    old_volume_at_level = 0
-                    for ob_price, ob_vol in self.last_orderbook['asks']:
-                        if self._same_price_level(price, float(ob_price)):
-                            old_volume_at_level = float(ob_vol)
-                            break
-
-                    if self._same_price_level(price, current_best_ask):
-                        volume_decrease_at_best = max(0, float(self.last_orderbook['asks'][0][1]) - current_volume_at_level)
-                        order.current_queue = max(0, order.current_queue - volume_decrease_at_best)
+            # Check if order should be cancelled
+            if order.price < current_best_ask:  # Our ask is crossed by market
+                print(f"SELL Order @ {order.price} auto-cancelled: crossed by market.")
+                self.cancel_order(side="sell", manual_cancel=False, reason="crossed")
+                return
+            elif (order.price - current_best_ask) > self.MAX_TICKS_AWAY * self.TICK:  # Too far away
+                print(f"SELL Order @ {order.price} auto-cancelled: too far from best ask ({current_best_ask}).")
+                self.cancel_order(side="sell", manual_cancel=False, reason="too_far")
+                return
             
-            elif abs(price - current_best_ask) > self.MAX_TICKS_AWAY * self.TICK and price > current_best_ask: # Our ask is too high / uncompetitive
-                print(f"SELL Order @ {price} auto-cancelled: too far from best ask ({current_best_ask}).")
-                self.cancel_order(side="sell")
-            elif price < current_best_ask: # Our ask is crossed by the market's best ask
-                print(f"SELL Order @ {price} auto-cancelled: crossed by new best ask ({current_best_ask}).")
-                self.cancel_order(side="sell")
-    
+            # Update queue position if we're still in the book
+            self._update_order_queue_position(order, current_orderbook)
+
+    def _update_order_queue_position(self, order: Order, current_orderbook):
+        """Update queue position based on orderbook changes"""
+        if not self.last_orderbook:
+            return
+            
+        bids = current_orderbook['bids']
+        asks = current_orderbook['asks']
+        old_bids = self.last_orderbook['bids']
+        old_asks = self.last_orderbook['asks']
+        
+        if order.side == "buy":
+            # Find our price level in current and old orderbooks
+            current_vol = 0
+            old_vol = 0
+            
+            for price, vol in bids:
+                if self._same_price_level(order.price, float(price)):
+                    current_vol = float(vol)
+                    break
+                    
+            for price, vol in old_bids:
+                if self._same_price_level(order.price, float(price)):
+                    old_vol = float(vol)
+                    break
+            
+            if current_vol > 0 and old_vol > 0:
+                # Volume decreased = people ahead of us got filled
+                volume_decrease = max(0, old_vol - current_vol)
+                order.current_queue = max(0, order.current_queue - volume_decrease)
+            elif current_vol > 0:
+                # Price level reappeared or we're tracking it for first time
+                order.current_queue = min(order.current_queue, current_vol)
+                
+        elif order.side == "sell":
+            # Same logic for asks
+            current_vol = 0
+            old_vol = 0
+            
+            for price, vol in asks:
+                if self._same_price_level(order.price, float(price)):
+                    current_vol = float(vol)
+                    break
+                    
+            for price, vol in old_asks:
+                if self._same_price_level(order.price, float(price)):
+                    old_vol = float(vol)
+                    break
+            
+            if current_vol > 0 and old_vol > 0:
+                volume_decrease = max(0, old_vol - current_vol)
+                order.current_queue = max(0, order.current_queue - volume_decrease)
+            elif current_vol > 0:
+                order.current_queue = min(order.current_queue, current_vol)
+
     def update_order_with_orderbook(self, current_orderbook):
         if self.open_bid_order:
             self._update_single_order(self.open_bid_order, current_orderbook)
@@ -199,7 +286,7 @@ class QuoteEngine:
         return abs(a - b) < (tick / 2)
     
     def _simulate_fill_single_order(self, order: Order, trade_price, trade_qty, trade_side):
-        if not order or order.filled:
+        if not order:
             return False
         
         if not self._same_price_level(trade_price, order.price):
@@ -216,11 +303,13 @@ class QuoteEngine:
         order.current_queue -= trade_qty
 
         cq_before_trade_impact = order.current_queue + trade_qty
-        if cq_before_trade_impact <= 0: cq_before_trade_impact = 0
+        if cq_before_trade_impact <= 0: 
+            cq_before_trade_impact = 0
 
         if order.current_queue <= 0:
             qty_past_our_turn = trade_qty - cq_before_trade_impact
-            if qty_past_our_turn < 0: qty_past_our_turn = 0
+            if qty_past_our_turn < 0: 
+                qty_past_our_turn = 0
 
             our_fill = min(order.remaining_qty, qty_past_our_turn)
 
@@ -237,9 +326,10 @@ class QuoteEngine:
                 
                 print(f"✅ {order.side.upper()} FILLED: {our_fill:.6f} @ {order.price}")
                 print(f"   New Position: {self.position:.6f} | Cash: {self.cash:.2f}")
+                self.status_print_events.add("order_filled")
 
                 if order.remaining_qty < 0.0000001:
-                    print(f"{order.size.upper()} Order completely filled!")
+                    print(f"{order.side.upper()} Order completely filled!")
                     if order.side == "buy":
                         self.open_bid_order = None
                     else:
@@ -248,7 +338,6 @@ class QuoteEngine:
         else:
             print(f"Queue for {order.side.upper()} order reduced by {trade_qty:.6f}, remaining ahead: {order.current_queue:.6f}")
         return False
-    
 
     def simulate_fill(self, trade_price, trade_qty, trade_side):
         filled_bid = False
@@ -264,16 +353,46 @@ class QuoteEngine:
             if filled_ask and not self.open_ask_order:
                 pass
 
-    def print_status(self, mid_price):
+    def should_print_status(self, force_interval_seconds=10):
+        """Check if we should print status based on trading events or time interval"""
+        now = datetime.now(timezone.utc)
+        
+        # Print if we have meaningful trading events
+        if self.status_print_events:
+            return True
+        
+        # Print every N seconds if no events (to show we're still alive)
+        if (self.last_status_print_time is None or 
+            (now - self.last_status_print_time).total_seconds() >= force_interval_seconds):
+            return True
+            
+        return False
+    
+    def print_status(self, mid_price, force=False):
+        """Print status only when meaningful events occur or on interval"""
+        now = datetime.now(timezone.utc)
+        
+        if not force and not self.should_print_status():
+            return
+            
         pnl = self.mark_to_market_pnl(mid_price)
         active_orders_str = []
         if self.open_bid_order:
-            active_orders_str.append(f"BID@{self.open_bid_order.price} (Q:{self.open_bid_order.current_queue:.2f})")
+            active_orders_str.append(f"BID@{self.open_bid_order.price} (Q:{self.open_bid_order.current_queue:.3f}, Rem:{self.open_bid_order.remaining_qty:.3f})")
         if self.open_ask_order:
-            active_orders_str.append(f"ASK@{self.open_ask_order.price} (Q:{self.open_ask_order.current_queue:.2f})")
+            active_orders_str.append(f"ASK@{self.open_ask_order.price} (Q:{self.open_ask_order.current_queue:.3f}, Rem:{self.open_ask_order.remaining_qty:.3f})")
         orders_info = " | ".join(active_orders_str) if active_orders_str else "No open orders"
         
-        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | PnL: {pnl:.2f} | {orders_info}")
+        # Add event indicators if we have them
+        events_str = ""
+        if self.status_print_events:
+            events_str = f" [{', '.join(self.status_print_events)}]"
+        
+        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | PnL: {pnl:.2f} | {orders_info}{events_str}")
+        
+        # Clear events and update timestamp
+        self.status_print_events.clear()
+        self.last_status_print_time = now
 
     def mark_to_market(self, mid_price):
         return self.position * mid_price + self.cash
@@ -282,23 +401,30 @@ class QuoteEngine:
         """Return only the profit/loss component (excluding initial capital)."""
         return self.position * mid_price + self.cash - self.initial_cash
 
-    def cancel_order(self, side: str):
+    def cancel_order(self, side: str, manual_cancel: bool = False, reason: str = ""):
+        now = datetime.now(timezone.utc)
+        self.last_cancel_time = now
+        if manual_cancel:
+            self.last_manual_cancel_time = now
+
+        reason_str = f" ({reason})" if reason else ""
+        
         if side == "buy" and self.open_bid_order:
-            print(f"Cancelled BUY order @ {self.open_bid_order.price}")
+            print(f"Cancelled BUY order @ {self.open_bid_order.price}{' (MANUAL)' if manual_cancel else ' (AUTO)'}{reason_str}")
             self.open_bid_order = None
-            self.last_cancel_time = datetime.now(timezone.utc)
+            self.status_print_events.add("order_cancelled")
         elif side == "sell" and self.open_ask_order:
-            print(f"Cancelled SELL order @ {self.open_ask_order.price}")
+            print(f"Cancelled SELL order @ {self.open_ask_order.price}{' (MANUAL)' if manual_cancel else ' (AUTO)'}{reason_str}")
             self.open_ask_order = None
-            self.last_cancel_time = datetime.now(timezone.utc)
+            self.status_print_events.add("order_cancelled")
         else:
             print(f"No {side} order to cancel")
 
-    def cancel_all_orders(self):
+    def cancel_all_orders(self, manual_cancel: bool = False):
         if self.open_bid_order:
-            self.cancel_order(side="buy")
+            self.cancel_order(side="buy", manual_cancel=manual_cancel)
         if self.open_ask_order:
-            self.cancel_order(side="sell")
+            self.cancel_order(side="sell", manual_cancel=manual_cancel)
 
     def get_open_bid_order(self):
         return self.open_bid_order
