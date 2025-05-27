@@ -145,28 +145,70 @@ class Orderbookstream:
                                 continue
                                 
                         if current_signal_state != "HOLD_CROSSED_SKEW":
-                            if obi < -0.2:
+                            # Position-aware asymmetric OBI-based risk management
+                            current_position = self.quote_engine.get_position()
+                            
+                            # Asymmetric thresholds based on position
+                            if current_position > 0.005:  # When long, be more lenient on asks
+                                extreme_bid_threshold = 0.5   # Stricter on bids when long
+                                extreme_ask_threshold = 0.85  # More lenient on asks when long
+                                moderate_bid_threshold = 0.25
+                                moderate_ask_threshold = 0.5
+                            elif current_position < -0.005:  # When short, be more lenient on bids
+                                extreme_bid_threshold = 0.85  # More lenient on bids when short
+                                extreme_ask_threshold = 0.5   # Stricter on asks when short
+                                moderate_bid_threshold = 0.5
+                                moderate_ask_threshold = 0.25
+                            else:  # When flat, use balanced thresholds
+                                extreme_bid_threshold = 0.6
+                                extreme_ask_threshold = 0.6
+                                moderate_bid_threshold = 0.3
+                                moderate_ask_threshold = 0.3
+
+                            # BID SIDE LOGIC
+                            if obi < -extreme_bid_threshold:  # Extreme selling pressure
                                 if self.quote_engine.get_open_bid_order():
-                                    print(f"OBI ({obi:.2f}) unfavorable for BID. Cancelling existing bid @ {self.quote_engine.open_bid_order.price}.")
+                                    print(f"OBI ({obi:.2f}) EXTREME for BID (pos: {current_position:.3f}). Cancelling existing bid.")
                                     self.quote_engine.cancel_order("buy", manual_cancel=True)
-                                current_signal_state = "HOLD_NO_BID (OBI)"
+                                current_signal_state = "HOLD_NO_BID (EXTREME_OBI)"
+                            elif obi < -moderate_bid_threshold:  # Moderate selling pressure  
+                                # Don't cancel, but widen bid spread
+                                target_bid_price = round_to_tick(base_best_bid_price - (skew_ticks * tick_size) - tick_size, tick_size)
+                                if self.quote_engine.place_order("buy", target_bid_price, self.desired_order_size, orderbook):
+                                    current_signal_state = "BID_WIDE (MODERATE_OBI)"
+                                else:
+                                    current_signal_state = "HOLD_NO_BID (PRICE)"
                             else:
-                                # Try to place bid order - quote engine will handle replacement logic
+                                # Normal bid placement
                                 if self.quote_engine.place_order("buy", target_bid_price, self.desired_order_size, orderbook):
                                     pass  # Order placed or maintained successfully
                                 else:
                                     current_signal_state = "HOLD_NO_BID (PRICE)"
 
-                            if obi > 0.2:
+                            # ASK SIDE LOGIC
+                            if obi > extreme_ask_threshold:   # Extreme buying pressure
                                 if self.quote_engine.get_open_ask_order():
-                                    print(f"OBI ({obi:.2f}) unfavorable for ASK. Cancelling existing ask @ {self.quote_engine.open_ask_order.price}.")
+                                    print(f"OBI ({obi:.2f}) EXTREME for ASK (pos: {current_position:.3f}). Cancelling existing ask.")
                                     self.quote_engine.cancel_order("sell", manual_cancel=True)
-                                if current_signal_state == "HOLD_NO_BID (OBI)":
-                                    current_signal_state = "HOLD_NEUTRAL (OBI)"
+                                if current_signal_state == "HOLD_NO_BID (EXTREME_OBI)":
+                                    current_signal_state = "HOLD_BOTH (EXTREME_OBI)"
                                 else:
-                                    current_signal_state = "HOLD_NO_ASK (OBI)"
+                                    current_signal_state = "HOLD_NO_ASK (EXTREME_OBI)"
+                            elif obi > moderate_ask_threshold:  # Moderate buying pressure
+                                # Don't cancel, but widen ask spread  
+                                target_ask_price = round_to_tick(base_best_ask_price - (skew_ticks * tick_size) + tick_size, tick_size)
+                                if self.quote_engine.place_order("sell", target_ask_price, self.desired_order_size, orderbook):
+                                    if current_signal_state == "BID_WIDE (MODERATE_OBI)":
+                                        current_signal_state = "BOTH_WIDE (MODERATE_OBI)"
+                                    else:
+                                        current_signal_state = "ASK_WIDE (MODERATE_OBI)"
+                                else:
+                                    if current_signal_state == "HOLD_NO_BID (PRICE)":
+                                        current_signal_state = "HOLD_BOTH (PRICE)"
+                                    else:
+                                        current_signal_state = "HOLD_NO_ASK (PRICE)"
                             else:
-                                # Try to place ask order - quote engine will handle replacement logic
+                                # Normal ask placement
                                 if self.quote_engine.place_order("sell", target_ask_price, self.desired_order_size, orderbook):
                                     pass  # Order placed or maintained successfully
                                 else:

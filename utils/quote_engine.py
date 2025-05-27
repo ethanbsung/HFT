@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import copy
 
 class Order:
@@ -18,9 +18,10 @@ class Order:
 
 class QuoteEngine:
     TICK = 0.01
-    MAX_TICKS_AWAY = 8
+    BASE_MAX_TICKS_AWAY = 15  # Increased from 8 to 15
+    ADAPTIVE_MAX_TICKS_MULTIPLIER = 2.0  # Can go up to 30 ticks in volatile conditions
     ORDER_TTL_SEC = 15.0
-    MIN_ORDER_REPLACE_INTERVAL = 0.5  # Don't replace orders more frequently than this
+    MIN_ORDER_REPLACE_INTERVAL = 0.5
 
     def __init__(self, max_position_size=0.05):
         self.position = 0
@@ -37,9 +38,16 @@ class QuoteEngine:
         # Track when meaningful events happen for status printing
         self.last_status_print_time = None
         self.status_print_events = set()  # Track what events trigger status prints
+        
+        # Order-to-trade ratio tracking
+        self.orders_sent = 0
+        self.trades_filled = 0
+        self.recent_orders = []  # List of (timestamp, order_type) for rolling window
+        self.recent_fills = []   # List of timestamps for rolling window
+        self.ot_ratio_window = 300  # 5 minute window in seconds
 
     def _should_replace_order(self, side, target_price, current_order):
-        """Check if we should replace an existing order"""
+        """Check if we should replace an existing order - with anti-flicker logic"""
         if not current_order:
             return True
             
@@ -53,20 +61,69 @@ class QuoteEngine:
             if (now - self.last_ask_replace_time).total_seconds() < self.MIN_ORDER_REPLACE_INTERVAL:
                 return False
         
-        # Only replace if price difference is significant
+        # Anti-flicker: Only replace if price difference is substantial
         if not self._same_price_level(target_price, current_order.price):
             price_diff_ticks = abs(target_price - current_order.price) / self.TICK
-            return price_diff_ticks >= 1.0  # Only replace if >1 tick difference
+            
+            # More aggressive threshold based on how long order has been alive
+            order_age = (now - current_order.entry_time).total_seconds()
+            
+            if order_age < 2.0:  # Order is very young
+                return price_diff_ticks >= 5.0  # Need 5+ tick difference (was 3)
+            elif order_age < 5.0:  # Order is young
+                return price_diff_ticks >= 3.0  # Need 3+ tick difference (was 2)
+            else:  # Order is mature
+                return price_diff_ticks >= 2.0  # Need 2+ tick difference (was 1)
             
         return False
 
+    def _can_amend_order(self, order, target_price):
+        """Check if we can amend an order instead of canceling it"""
+        if not order:
+            return False
+            
+        price_diff_ticks = abs(target_price - order.price) / self.TICK
+        
+        # Allow amending for small price differences to maintain queue priority
+        return price_diff_ticks <= 5.0  # Within 5 ticks can be amended
+    
+    def _amend_order(self, order, new_price):
+        """Amend an existing order price while maintaining partial queue priority"""
+        old_price = order.price
+        price_diff_ticks = abs(new_price - old_price) / self.TICK
+        
+        # Update the order price
+        order.price = new_price
+        
+        # Maintain some queue priority based on how far we moved
+        if price_diff_ticks <= 1.0:
+            # Very small move - keep most queue priority
+            queue_retention = 0.8
+        elif price_diff_ticks <= 3.0:
+            # Small move - keep some queue priority  
+            queue_retention = 0.5
+        else:
+            # Larger move - lose most queue priority
+            queue_retention = 0.2
+            
+        order.current_queue = max(0.001, order.current_queue * queue_retention)
+        
+        print(f"AMENDED {order.side.upper()} order: {old_price} → {new_price} (queue retained: {queue_retention:.1%})")
+        self.status_print_events.add("order_amended")
+        self._track_order_sent("amend")
+
     def place_order(self, side, price, size, current_orderbook):
         """
-        Intelligently place or maintain orders
+        Intelligently place or maintain orders with amend capability
         """
         if side == "buy":
             if self.position + size > self.max_position_size:
                 return False
+                
+            # Try to amend existing order first
+            if self.open_bid_order and self._can_amend_order(self.open_bid_order, price):
+                self._amend_order(self.open_bid_order, price)
+                return True
                 
             # Check if we should replace existing order
             if not self._should_replace_order(side, price, self.open_bid_order):
@@ -79,6 +136,11 @@ class QuoteEngine:
         elif side == "sell":
             if self.position - size < -self.max_position_size:
                 return False
+                
+            # Try to amend existing order first
+            if self.open_ask_order and self._can_amend_order(self.open_ask_order, price):
+                self._amend_order(self.open_ask_order, price)
+                return True
                 
             # Check if we should replace existing order
             if not self._should_replace_order(side, price, self.open_ask_order):
@@ -94,16 +156,23 @@ class QuoteEngine:
         queue_ahead = self._calculate_queue_position(side, price, current_orderbook)
         if queue_ahead is None:
             return False
+            
+        # Reject orders with excessive queue ahead (whale orders)
+        if queue_ahead > 5.0:  # More than 5 BTC ahead
+            print(f"Rejected {side} order @ {price}: excessive queue ahead ({queue_ahead:.2f} BTC)")
+            return False
         
         new_order = Order(side, price, size, queue_ahead)
         if side == "buy":
             self.open_bid_order = new_order
             print(f"Placed BUY order: {size} @ {price}, queue ahead: {queue_ahead:.6f}")
             self.status_print_events.add("order_placed")
+            self._track_order_sent("new_bid")
         elif side == "sell":
             self.open_ask_order = new_order
             print(f"Placed SELL order: {size} @ {price}, queue ahead: {queue_ahead:.6f}")
             self.status_print_events.add("order_placed")
+            self._track_order_sent("new_ask")
         return True
         
     def _calculate_queue_position(self, side, price, orderbook):
@@ -126,7 +195,7 @@ class QuoteEngine:
             
             # Price not found in current orderbook - estimate based on market behavior
             best_bid = float(bids[0][0])
-            if price <= best_bid and (best_bid - price) <= self.MAX_TICKS_AWAY * self.TICK:
+            if price <= best_bid and (best_bid - price) <= self.BASE_MAX_TICKS_AWAY * self.TICK:
                 ticks_away = round((best_bid - price) / self.TICK)
                 
                 if ticks_away == 0:  # Joining at best bid
@@ -148,7 +217,7 @@ class QuoteEngine:
             
             # Price not found in current orderbook
             best_ask = float(asks[0][0])
-            if price >= best_ask and (price - best_ask) <= self.MAX_TICKS_AWAY * self.TICK:
+            if price >= best_ask and (price - best_ask) <= self.BASE_MAX_TICKS_AWAY * self.TICK:
                 ticks_away = round((price - best_ask) / self.TICK)
                 
                 if ticks_away == 0:  # Joining at best ask
@@ -189,14 +258,16 @@ class QuoteEngine:
         current_best_bid = float(bids[0][0])
         current_best_ask = float(asks[0][0])
 
+        adaptive_max_ticks = self._get_adaptive_max_ticks(current_orderbook)
+        
         if order.side == "buy":
             # Check if order should be cancelled due to being crossed or too far away
             if order.price > current_best_bid:  # Our bid is crossed by market
                 print(f"BUY Order @ {order.price} auto-cancelled: crossed by market.")
                 self.cancel_order(side="buy", manual_cancel=False, reason="crossed")
                 return
-            elif (current_best_bid - order.price) > self.MAX_TICKS_AWAY * self.TICK:  # Too far away
-                print(f"BUY Order @ {order.price} auto-cancelled: too far from best bid ({current_best_bid}).")
+            elif (current_best_bid - order.price) > adaptive_max_ticks * self.TICK:
+                print(f"BUY Order @ {order.price} auto-cancelled: too far from best bid ({current_best_bid}). Max ticks: {adaptive_max_ticks}")
                 self.cancel_order(side="buy", manual_cancel=False, reason="too_far")
                 return
             
@@ -209,8 +280,8 @@ class QuoteEngine:
                 print(f"SELL Order @ {order.price} auto-cancelled: crossed by market.")
                 self.cancel_order(side="sell", manual_cancel=False, reason="crossed")
                 return
-            elif (order.price - current_best_ask) > self.MAX_TICKS_AWAY * self.TICK:  # Too far away
-                print(f"SELL Order @ {order.price} auto-cancelled: too far from best ask ({current_best_ask}).")
+            elif (order.price - current_best_ask) > adaptive_max_ticks * self.TICK:
+                print(f"SELL Order @ {order.price} auto-cancelled: too far from best ask ({current_best_ask}). Max ticks: {adaptive_max_ticks}")
                 self.cancel_order(side="sell", manual_cancel=False, reason="too_far")
                 return
             
@@ -327,6 +398,7 @@ class QuoteEngine:
                 print(f"✅ {order.side.upper()} FILLED: {our_fill:.6f} @ {order.price}")
                 print(f"   New Position: {self.position:.6f} | Cash: {self.cash:.2f}")
                 self.status_print_events.add("order_filled")
+                self._track_fill()
 
                 if order.remaining_qty < 0.0000001:
                     print(f"{order.side.upper()} Order completely filled!")
@@ -388,7 +460,15 @@ class QuoteEngine:
         if self.status_print_events:
             events_str = f" [{', '.join(self.status_print_events)}]"
         
-        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | PnL: {pnl:.2f} | {orders_info}{events_str}")
+        # Add O:T ratio monitoring
+        ot_ratio = self.get_order_to_trade_ratio(window_only=True)
+        ot_str = f" | O:T {ot_ratio:.1f}" if ot_ratio != float('inf') else " | O:T ∞"
+        
+        # Alert if O:T ratio is too high
+        if self.should_alert_ot_ratio():
+            ot_str += " ⚠️"
+        
+        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | PnL: {pnl:.2f}{ot_str} | {orders_info}{events_str}")
         
         # Clear events and update timestamp
         self.status_print_events.clear()
@@ -437,4 +517,61 @@ class QuoteEngine:
 
     def get_cash(self):
         return self.cash
+    
+    def _get_adaptive_max_ticks(self, current_orderbook):
+        """Calculate adaptive max ticks based on market volatility"""
+        if not self.last_orderbook:
+            return self.BASE_MAX_TICKS_AWAY
+        
+        # Calculate recent price movement  
+        old_mid = (float(self.last_orderbook['bids'][0][0]) + float(self.last_orderbook['asks'][0][0])) / 2
+        new_mid = (float(current_orderbook['bids'][0][0]) + float(current_orderbook['asks'][0][0])) / 2
+        
+        price_move_ticks = abs(new_mid - old_mid) / self.TICK
+        
+        # If market is moving fast, allow orders to stay further away
+        if price_move_ticks > 5:  # Fast market
+            return int(self.BASE_MAX_TICKS_AWAY * self.ADAPTIVE_MAX_TICKS_MULTIPLIER)
+        elif price_move_ticks > 2:  # Moderate market
+            return int(self.BASE_MAX_TICKS_AWAY * 1.5)
+        else:  # Calm market
+            return self.BASE_MAX_TICKS_AWAY
+    
+    def _track_order_sent(self, order_type="new"):
+        """Track when orders are sent for O:T ratio calculation"""
+        now = datetime.now(timezone.utc)
+        self.orders_sent += 1
+        self.recent_orders.append((now, order_type))
+        
+        # Clean old entries outside the window
+        cutoff_time = now - timedelta(seconds=self.ot_ratio_window)
+        self.recent_orders = [(ts, ot) for ts, ot in self.recent_orders if ts > cutoff_time]
+    
+    def _track_fill(self):
+        """Track when fills occur for O:T ratio calculation"""
+        now = datetime.now(timezone.utc)
+        self.trades_filled += 1
+        self.recent_fills.append(now)
+        
+        # Clean old entries outside the window
+        cutoff_time = now - timedelta(seconds=self.ot_ratio_window)
+        self.recent_fills = [ts for ts in self.recent_fills if ts > cutoff_time]
+    
+    def get_order_to_trade_ratio(self, window_only=True):
+        """Calculate current order-to-trade ratio"""
+        if window_only:
+            orders = len(self.recent_orders)
+            fills = len(self.recent_fills)
+        else:
+            orders = self.orders_sent
+            fills = self.trades_filled
+        
+        if fills == 0:
+            return float('inf') if orders > 0 else 0
+        return orders / fills
+        
+    def should_alert_ot_ratio(self, threshold=25):
+        """Check if O:T ratio is approaching dangerous levels"""
+        current_ratio = self.get_order_to_trade_ratio(window_only=True)
+        return current_ratio > threshold and len(self.recent_fills) > 0
     
