@@ -19,11 +19,11 @@ class Orderbookstream:
         self.orderbook_features = []
         self.batch_size = 1000
         self.file_counter = 0
-        self.quote_engine = QuoteEngine(max_position_size=0.05)
-        self.desired_order_size = 0.01
+        self.quote_engine = QuoteEngine(max_position_size=2.0)
+        self.desired_order_size = 0.1
         self.target_inventory = 0.0
-        self.inventory_tick_skew_per_unit = 50
-        self.max_inventory_skew_ticks = 2
+        self.inventory_tick_skew_per_unit = 5
+        self.max_inventory_skew_ticks = 3
         
         # Create data directory if it doesn't exist
         os.makedirs("data/orderbooks", exist_ok=True)
@@ -149,21 +149,21 @@ class Orderbookstream:
                             current_position = self.quote_engine.get_position()
                             
                             # Asymmetric thresholds based on position
-                            if current_position > 0.005:  # When long, be more lenient on asks
-                                extreme_bid_threshold = 0.5   # Stricter on bids when long
-                                extreme_ask_threshold = 0.85  # More lenient on asks when long
-                                moderate_bid_threshold = 0.25
-                                moderate_ask_threshold = 0.5
-                            elif current_position < -0.005:  # When short, be more lenient on bids
-                                extreme_bid_threshold = 0.85  # More lenient on bids when short
-                                extreme_ask_threshold = 0.5   # Stricter on asks when short
-                                moderate_bid_threshold = 0.5
-                                moderate_ask_threshold = 0.25
+                            if current_position > self.desired_order_size / 2:  # When long, be more lenient on asks
+                                extreme_bid_threshold = 0.45   # Stricter on bids when long
+                                extreme_ask_threshold = 0.80  # More lenient on asks when long
+                                moderate_bid_threshold = 0.20
+                                moderate_ask_threshold = 0.45
+                            elif current_position < -self.desired_order_size / 2:  # When short, be more lenient on bids
+                                extreme_bid_threshold = 0.80  # More lenient on bids when short
+                                extreme_ask_threshold = 0.45   # Stricter on asks when short
+                                moderate_bid_threshold = 0.45 # Was 0.5
+                                moderate_ask_threshold = 0.20 # Was 0.25
                             else:  # When flat, use balanced thresholds
-                                extreme_bid_threshold = 0.6
-                                extreme_ask_threshold = 0.6
-                                moderate_bid_threshold = 0.3
-                                moderate_ask_threshold = 0.3
+                                extreme_bid_threshold = 0.55 # Was 0.6
+                                extreme_ask_threshold = 0.55 # Was 0.6
+                                moderate_bid_threshold = 0.25 # Was 0.3
+                                moderate_ask_threshold = 0.25 # Was 0.3
 
                             # BID SIDE LOGIC
                             if obi < -extreme_bid_threshold:  # Extreme selling pressure

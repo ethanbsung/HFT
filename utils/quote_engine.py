@@ -27,7 +27,7 @@ class QuoteEngine:
 
     def __init__(self, max_position_size=0.05):
         self.position = 0
-        self.cash = 10_000.0
+        self.cash = 100_000.0
         self.initial_cash = self.cash
         self.open_bid_order = None
         self.open_ask_order = None
@@ -207,7 +207,7 @@ class QuoteEngine:
                 if self._same_price_level(price, float(bid_price)):
                     # We're at this price level - assume we join at back of queue
                     queue_vol = float(bid_vol) * 0.85  # Assume we're behind 85% of existing volume
-                    return max(0.005, queue_vol)  # Minimum queue of 0.005
+                    return max(0.01, queue_vol)  # Minimum queue of 0.01 (was 0.005)
             
             # Price not found in current orderbook - estimate based on market behavior
             best_bid = float(bids[0][0])
@@ -217,11 +217,11 @@ class QuoteEngine:
                 if ticks_away == 0:  # Joining at best bid
                     # Estimate queue based on typical best bid volume
                     best_bid_vol = float(bids[0][1])
-                    return max(0.01, best_bid_vol * 0.4)  # Behind 40% of best bid volume
+                    return max(0.02, best_bid_vol * 0.4)  # Behind 40% of best bid volume, min 0.02
                 elif ticks_away == 1:  # One tick behind best
-                    return 0.005  # Small queue for near-best levels
+                    return 0.01  # Small queue for near-best levels
                 else:  # Further away
-                    return 0.002  # Very small queue for distant levels
+                    return 0.005  # Very small queue for distant levels
             return None
         
         elif side == "sell":
@@ -229,7 +229,7 @@ class QuoteEngine:
             for i, (ask_price, ask_vol) in enumerate(asks):
                 if self._same_price_level(price, float(ask_price)):
                     queue_vol = float(ask_vol) * 0.85  # Assume we're behind 85% of existing volume
-                    return max(0.005, queue_vol)  # Minimum queue of 0.005
+                    return max(0.01, queue_vol)  # Minimum queue of 0.01
             
             # Price not found in current orderbook
             best_ask = float(asks[0][0])
@@ -238,11 +238,11 @@ class QuoteEngine:
                 
                 if ticks_away == 0:  # Joining at best ask
                     best_ask_vol = float(asks[0][1])
-                    return max(0.01, best_ask_vol * 0.4)  # Behind 40% of best ask volume
+                    return max(0.02, best_ask_vol * 0.4)  # Behind 40% of best ask volume, min 0.02
                 elif ticks_away == 1:  # One tick above best
-                    return 0.005  # Small queue for near-best levels
+                    return 0.01  # Small queue for near-best levels
                 else:  # Further away
-                    return 0.002  # Very small queue for distant levels
+                    return 0.005  # Very small queue for distant levels (was 0.002)
             return None
         
         return None
