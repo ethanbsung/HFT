@@ -2,7 +2,7 @@ from datetime import datetime, timezone, timedelta
 import copy
 
 class Order:
-    def __init__(self, side, price, size, queue_ahead, entry_time=None):
+    def __init__(self, side, price, size, queue_ahead, mid_price_at_entry, entry_time=None):
         self.side = side
         self.price = price
         self.qty = size
@@ -14,6 +14,7 @@ class Order:
         self.order_id = f"{side}_{price}_{self.entry_time.timestamp()}"
         # Track our original price level for queue maintenance
         self.original_price_level = price
+        self.mid_price_at_entry = mid_price_at_entry
 
 
 class QuoteEngine:
@@ -22,6 +23,7 @@ class QuoteEngine:
     ADAPTIVE_MAX_TICKS_MULTIPLIER = 2.0  # Can go up to 30 ticks in volatile conditions
     ORDER_TTL_SEC = 15.0
     MIN_ORDER_REPLACE_INTERVAL = 0.5
+    MAKER_FEE_RATE = 0.0000  # Corresponds to >$500M 14-day volume (0.000%)
 
     def __init__(self, max_position_size=0.05):
         self.position = 0
@@ -38,6 +40,8 @@ class QuoteEngine:
         # Track when meaningful events happen for status printing
         self.last_status_print_time = None
         self.status_print_events = set()  # Track what events trigger status prints
+        self.spread_capture_pnl = 0.0
+        self.total_fees_paid = 0.0
         
         # Order-to-trade ratio tracking
         self.orders_sent = 0
@@ -116,6 +120,18 @@ class QuoteEngine:
         """
         Intelligently place or maintain orders with amend capability
         """
+        if not current_orderbook or not current_orderbook.get('bids') or not current_orderbook.get('asks'):
+            print("Warning: Orderbook data missing or incomplete in place_order. Cannot place order.")
+            return False
+        
+        bids = current_orderbook['bids']
+        asks = current_orderbook['asks']
+        if not bids or not asks:
+            print("Warning: Bids or asks missing in place_order. Cannot place order.")
+            return False
+
+        mid_price_at_entry = (float(bids[0][0]) + float(asks[0][0])) / 2
+
         if side == "buy":
             if self.position + size > self.max_position_size:
                 return False
@@ -162,15 +178,15 @@ class QuoteEngine:
             print(f"Rejected {side} order @ {price}: excessive queue ahead ({queue_ahead:.2f} BTC)")
             return False
         
-        new_order = Order(side, price, size, queue_ahead)
+        new_order = Order(side, price, size, queue_ahead, mid_price_at_entry)
         if side == "buy":
             self.open_bid_order = new_order
-            print(f"Placed BUY order: {size} @ {price}, queue ahead: {queue_ahead:.6f}")
+            print(f"Placed BUY order: {size} @ {price}, queue ahead: {queue_ahead:.6f}, mid_at_entry: {mid_price_at_entry:.2f}")
             self.status_print_events.add("order_placed")
             self._track_order_sent("new_bid")
         elif side == "sell":
             self.open_ask_order = new_order
-            print(f"Placed SELL order: {size} @ {price}, queue ahead: {queue_ahead:.6f}")
+            print(f"Placed SELL order: {size} @ {price}, queue ahead: {queue_ahead:.6f}, mid_at_entry: {mid_price_at_entry:.2f}")
             self.status_print_events.add("order_placed")
             self._track_order_sent("new_ask")
         return True
@@ -391,12 +407,32 @@ class QuoteEngine:
                 if order.side == "buy":
                     self.position += our_fill
                     self.cash -= order.price * our_fill
-                else:
+                    # Calculate spread capture PnL
+                    trade_value = order.price * our_fill
+                    fee_for_fill = trade_value * self.MAKER_FEE_RATE
+                    self.cash -= fee_for_fill
+                    self.total_fees_paid += fee_for_fill
+
+                    # For a buy order, we capture spread if our fill price is less than the mid-price at entry
+                    gross_spread_profit = (order.mid_price_at_entry - order.price) * our_fill
+                    net_spread_profit = gross_spread_profit - fee_for_fill
+                    self.spread_capture_pnl += net_spread_profit
+                else: # sell order
                     self.position -= our_fill
                     self.cash += order.price * our_fill
+                    # Calculate spread capture PnL
+                    trade_value = order.price * our_fill
+                    fee_for_fill = trade_value * self.MAKER_FEE_RATE
+                    self.cash -= fee_for_fill # For sell orders, fee is also a deduction from cash proceeds.
+                    self.total_fees_paid += fee_for_fill
+
+                    # For a sell order, we capture spread if our fill price is greater than the mid-price at entry
+                    gross_spread_profit = (order.price - order.mid_price_at_entry) * our_fill
+                    net_spread_profit = gross_spread_profit - fee_for_fill
+                    self.spread_capture_pnl += net_spread_profit
                 
                 print(f"✅ {order.side.upper()} FILLED: {our_fill:.6f} @ {order.price}")
-                print(f"   New Position: {self.position:.6f} | Cash: {self.cash:.2f}")
+                print(f"   New Position: {self.position:.6f} | Cash: {self.cash:.2f} | Net Spread PnL: {self.spread_capture_pnl:.2f} | Fees this fill: {fee_for_fill:.4f}")
                 self.status_print_events.add("order_filled")
                 self._track_fill()
 
@@ -467,8 +503,10 @@ class QuoteEngine:
         # Alert if O:T ratio is too high
         if self.should_alert_ot_ratio():
             ot_str += " ⚠️"
+
+        unrealized_pnl = self.get_unrealized_open_order_pnl(mid_price)
         
-        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | PnL: {pnl:.2f}{ot_str} | {orders_info}{events_str}")
+        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | MTM PnL: {pnl:.2f} | Net Spread PnL: {self.spread_capture_pnl:.2f} | Unrealized: {unrealized_pnl:.2f} | Total Fees: {self.total_fees_paid:.2f}{ot_str} | {orders_info}{events_str}")
         
         # Clear events and update timestamp
         self.status_print_events.clear()
@@ -480,6 +518,21 @@ class QuoteEngine:
     def mark_to_market_pnl(self, mid_price):
         """Return only the profit/loss component (excluding initial capital)."""
         return self.position * mid_price + self.cash - self.initial_cash
+
+    def get_unrealized_open_order_pnl(self, current_mid_price: float) -> float:
+        """Calculate the potential PnL from open orders if they were filled against the current mid_price."""
+        unrealized_pnl = 0.0
+        if self.open_bid_order:
+            # For a bid (buy order), potential profit is (current_mid_price - order_price) * remaining_qty
+            # This is positive if the market mid has moved up since we placed our bid.
+            unrealized_pnl += (current_mid_price - self.open_bid_order.price) * self.open_bid_order.remaining_qty
+        
+        if self.open_ask_order:
+            # For an ask (sell order), potential profit is (order_price - current_mid_price) * remaining_qty
+            # This is positive if the market mid has moved down since we placed our ask.
+            unrealized_pnl += (self.open_ask_order.price - current_mid_price) * self.open_ask_order.remaining_qty
+            
+        return unrealized_pnl
 
     def cancel_order(self, side: str, manual_cancel: bool = False, reason: str = ""):
         now = datetime.now(timezone.utc)
