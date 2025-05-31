@@ -21,7 +21,7 @@ class QuoteEngine:
     TICK = 0.01
     BASE_MAX_TICKS_AWAY = 15  # Increased from 8 to 15
     ADAPTIVE_MAX_TICKS_MULTIPLIER = 2.0  # Can go up to 30 ticks in volatile conditions
-    ORDER_TTL_SEC = 15.0
+    ORDER_TTL_SEC = 45.0
     MIN_ORDER_REPLACE_INTERVAL = 0.5
     MAKER_FEE_RATE = 0.0000  # Corresponds to >$500M 14-day volume (0.000%)
 
@@ -73,11 +73,11 @@ class QuoteEngine:
             order_age = (now - current_order.entry_time).total_seconds()
             
             if order_age < 2.0:  # Order is very young
-                return price_diff_ticks >= 5.0  # Need 5+ tick difference (was 3)
+                return price_diff_ticks >= 7.0  # Need 7+ tick difference (was 5.0)
             elif order_age < 5.0:  # Order is young
-                return price_diff_ticks >= 3.0  # Need 3+ tick difference (was 2)
+                return price_diff_ticks >= 5.0  # Need 5+ tick difference (was 3.0)
             else:  # Order is mature
-                return price_diff_ticks >= 2.0  # Need 2+ tick difference (was 1)
+                return price_diff_ticks >= 3.0  # Need 3+ tick difference (was 2.0)
             
         return False
 
