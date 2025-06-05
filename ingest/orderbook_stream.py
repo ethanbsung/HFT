@@ -149,21 +149,22 @@ class Orderbookstream:
                             current_position = self.quote_engine.get_position()
                             
                             # Asymmetric thresholds based on position
+                            # Adjusted condition for larger desired_order_size
                             if current_position > self.desired_order_size / 2:  # When long, be more lenient on asks
-                                extreme_bid_threshold = 0.45   # Stricter on bids when long
-                                extreme_ask_threshold = 0.80  # More lenient on asks when long
-                                moderate_bid_threshold = 0.20
-                                moderate_ask_threshold = 0.45
+                                extreme_bid_threshold = 0.65   # Less sensitive (was 0.45)
+                                extreme_ask_threshold = 0.85  # Less sensitive (was 0.80)
+                                moderate_bid_threshold = 0.35 # Less sensitive (was 0.20)
+                                moderate_ask_threshold = 0.55 # Less sensitive (was 0.45)
                             elif current_position < -self.desired_order_size / 2:  # When short, be more lenient on bids
-                                extreme_bid_threshold = 0.80  # More lenient on bids when short
-                                extreme_ask_threshold = 0.45   # Stricter on asks when short
-                                moderate_bid_threshold = 0.45 # Was 0.5
-                                moderate_ask_threshold = 0.20 # Was 0.25
+                                extreme_bid_threshold = 0.85  # Less sensitive (was 0.80)
+                                extreme_ask_threshold = 0.65   # Less sensitive (was 0.45)
+                                moderate_bid_threshold = 0.55 # Less sensitive (was 0.45)
+                                moderate_ask_threshold = 0.35 # Less sensitive (was 0.20)
                             else:  # When flat, use balanced thresholds
-                                extreme_bid_threshold = 0.55 # Was 0.6
-                                extreme_ask_threshold = 0.55 # Was 0.6
-                                moderate_bid_threshold = 0.25 # Was 0.3
-                                moderate_ask_threshold = 0.25 # Was 0.3
+                                extreme_bid_threshold = 0.70 # Less sensitive (was 0.55)
+                                extreme_ask_threshold = 0.70 # Less sensitive (was 0.55)
+                                moderate_bid_threshold = 0.40 # Less sensitive (was 0.25)
+                                moderate_ask_threshold = 0.40 # Less sensitive (was 0.25)
 
                             # BID SIDE LOGIC
                             if obi < -extreme_bid_threshold:  # Extreme selling pressure

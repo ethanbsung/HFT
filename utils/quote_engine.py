@@ -19,11 +19,11 @@ class Order:
 
 class QuoteEngine:
     TICK = 0.01
-    BASE_MAX_TICKS_AWAY = 15  # Increased from 8 to 15
-    ADAPTIVE_MAX_TICKS_MULTIPLIER = 2.0  # Can go up to 30 ticks in volatile conditions
-    ORDER_TTL_SEC = 45.0
+    BASE_MAX_TICKS_AWAY = 15
+    ADAPTIVE_MAX_TICKS_MULTIPLIER = 2.0
+    ORDER_TTL_SEC = 120.0
     MIN_ORDER_REPLACE_INTERVAL = 0.5
-    MAKER_FEE_RATE = 0.0000  # Corresponds to >$500M 14-day volume (0.000%)
+    MAKER_FEE_RATE = 0.0000
 
     def __init__(self, max_position_size=0.05):
         self.position = 0
@@ -49,6 +49,15 @@ class QuoteEngine:
         self.recent_orders = []  # List of (timestamp, order_type) for rolling window
         self.recent_fills = []   # List of timestamps for rolling window
         self.ot_ratio_window = 300  # 5 minute window in seconds
+        
+        # Performance analytics for realistic simulation benchmarks
+        self.pnl_history = []  # Store (timestamp, pnl) for Sharpe calculation
+        self.daily_pnls = []   # Store daily PnL for drawdown calculation
+        self.trades_won = 0
+        self.trades_total = 0
+        self.max_drawdown_observed = 0.0
+        self.peak_equity = self.initial_cash
+        self.session_start_time = datetime.now(timezone.utc)
 
     def _should_replace_order(self, side, target_price, current_order):
         """Check if we should replace an existing order - with anti-flicker logic"""
@@ -59,25 +68,24 @@ class QuoteEngine:
         
         # Check minimum replace interval
         if side == "buy" and self.last_bid_replace_time:
-            if (now - self.last_bid_replace_time).total_seconds() < self.MIN_ORDER_REPLACE_INTERVAL:
+            if (now - self.last_bid_replace_time).total_seconds() < 2.0:
                 return False
         elif side == "sell" and self.last_ask_replace_time:
-            if (now - self.last_ask_replace_time).total_seconds() < self.MIN_ORDER_REPLACE_INTERVAL:
+            if (now - self.last_ask_replace_time).total_seconds() < 2.0:
                 return False
         
         # Anti-flicker: Only replace if price difference is substantial
         if not self._same_price_level(target_price, current_order.price):
             price_diff_ticks = abs(target_price - current_order.price) / self.TICK
             
-            # More aggressive threshold based on how long order has been alive
             order_age = (now - current_order.entry_time).total_seconds()
             
-            if order_age < 2.0:  # Order is very young
-                return price_diff_ticks >= 7.0  # Need 7+ tick difference (was 5.0)
-            elif order_age < 5.0:  # Order is young
-                return price_diff_ticks >= 5.0  # Need 5+ tick difference (was 3.0)
-            else:  # Order is mature
-                return price_diff_ticks >= 3.0  # Need 3+ tick difference (was 2.0)
+            if order_age < 10.0:
+                return price_diff_ticks >= 15.0
+            elif order_age < 30.0:
+                return price_diff_ticks >= 10.0
+            else:
+                return price_diff_ticks >= 5.0
             
         return False
 
@@ -417,6 +425,11 @@ class QuoteEngine:
                     gross_spread_profit = (order.mid_price_at_entry - order.price) * our_fill
                     net_spread_profit = gross_spread_profit - fee_for_fill
                     self.spread_capture_pnl += net_spread_profit
+                    
+                    # Track win/loss
+                    self.trades_total += 1
+                    if net_spread_profit > 0:
+                        self.trades_won += 1
                 else: # sell order
                     self.position -= our_fill
                     self.cash += order.price * our_fill
@@ -430,6 +443,11 @@ class QuoteEngine:
                     gross_spread_profit = (order.price - order.mid_price_at_entry) * our_fill
                     net_spread_profit = gross_spread_profit - fee_for_fill
                     self.spread_capture_pnl += net_spread_profit
+                    
+                    # Track win/loss
+                    self.trades_total += 1
+                    if net_spread_profit > 0:
+                        self.trades_won += 1
                 
                 print(f"✅ {order.side.upper()} FILLED: {our_fill:.6f} @ {order.price}")
                 print(f"   New Position: {self.position:.6f} | Cash: {self.cash:.2f} | Net Spread PnL: {self.spread_capture_pnl:.2f} | Fees this fill: {fee_for_fill:.4f}")
@@ -483,6 +501,9 @@ class QuoteEngine:
         if not force and not self.should_print_status():
             return
             
+        # Update performance metrics
+        self._update_performance_metrics(mid_price)
+            
         pnl = self.mark_to_market_pnl(mid_price)
         active_orders_str = []
         if self.open_bid_order:
@@ -506,7 +527,15 @@ class QuoteEngine:
 
         unrealized_pnl = self.get_unrealized_open_order_pnl(mid_price)
         
-        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | MTM PnL: {pnl:.2f} | Net Spread PnL: {self.spread_capture_pnl:.2f} | Unrealized: {unrealized_pnl:.2f} | Total Fees: {self.total_fees_paid:.2f}{ot_str} | {orders_info}{events_str}")
+        # Add performance metrics to status (every 10th print to avoid clutter)
+        perf_str = ""
+        if len(self.pnl_history) > 0 and len(self.pnl_history) % 10 == 0:
+            sharpe = self.calculate_sharpe_ratio()
+            win_rate = self.get_win_rate()
+            dd_pct = self.max_drawdown_observed * 100
+            perf_str = f" | Sharpe:{sharpe:.2f} WR:{win_rate:.1f}% DD:{dd_pct:.1f}%"
+        
+        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | MTM PnL: {pnl:.2f} | Net Spread PnL: {self.spread_capture_pnl:.2f} | Unrealized: {unrealized_pnl:.2f} | Total Fees: {self.total_fees_paid:.2f}{ot_str}{perf_str} | {orders_info}{events_str}")
         
         # Clear events and update timestamp
         self.status_print_events.clear()
@@ -627,4 +656,99 @@ class QuoteEngine:
         """Check if O:T ratio is approaching dangerous levels"""
         current_ratio = self.get_order_to_trade_ratio(window_only=True)
         return current_ratio > threshold and len(self.recent_fills) > 0
+    
+    def _update_performance_metrics(self, mid_price):
+        """Update performance tracking metrics"""
+        now = datetime.now(timezone.utc)
+        current_pnl = self.mark_to_market_pnl(mid_price)
+        current_equity = self.mark_to_market(mid_price)
+        
+        # Update PnL history for Sharpe calculation (sample every 30 seconds)
+        if not self.pnl_history or (now - self.pnl_history[-1][0]).total_seconds() >= 30:
+            self.pnl_history.append((now, current_pnl))
+            
+        # Update peak equity and drawdown
+        if current_equity > self.peak_equity:
+            self.peak_equity = current_equity
+        else:
+            current_drawdown = (self.peak_equity - current_equity) / self.peak_equity
+            if current_drawdown > self.max_drawdown_observed:
+                self.max_drawdown_observed = current_drawdown
+    
+    def calculate_sharpe_ratio(self, risk_free_rate=0.0):
+        """Calculate annualized Sharpe ratio from PnL history"""
+        if len(self.pnl_history) < 2:
+            return 0.0
+            
+        # Calculate returns from PnL differences
+        returns = []
+        for i in range(1, len(self.pnl_history)):
+            time_diff = (self.pnl_history[i][0] - self.pnl_history[i-1][0]).total_seconds()
+            pnl_diff = self.pnl_history[i][1] - self.pnl_history[i-1][1]
+            if time_diff > 0:
+                # Use simple period return without annualizing here
+                period_return = pnl_diff / self.initial_cash
+                returns.append(period_return)
+        
+        if len(returns) < 2:
+            return 0.0
+            
+        import statistics
+        mean_return = statistics.mean(returns)
+        return_std = statistics.stdev(returns) if len(returns) > 1 else 0.0
+        
+        if return_std == 0:
+            # If no volatility but positive mean return, return a high positive Sharpe
+            # If no volatility and negative mean return, return a high negative Sharpe
+            return 10.0 if mean_return > 0 else -10.0 if mean_return < 0 else 0.0
+            
+        # Annualize assuming 30-second intervals
+        periods_per_year = (365 * 24 * 60 * 60) / 30
+        annual_mean = mean_return * periods_per_year
+        annual_std = return_std * (periods_per_year ** 0.5)
+        
+        return (annual_mean - risk_free_rate) / annual_std if annual_std > 0 else 0.0
+    
+    def get_win_rate(self):
+        """Calculate win rate percentage"""
+        if self.trades_total == 0:
+            return 0.0
+        return (self.trades_won / self.trades_total) * 100
+    
+    def get_session_performance_summary(self):
+        """Get comprehensive performance summary with realistic benchmarks"""
+        session_duration = (datetime.now(timezone.utc) - self.session_start_time).total_seconds() / 3600  # hours
+        sharpe = self.calculate_sharpe_ratio()
+        win_rate = self.get_win_rate()
+        ot_ratio = self.get_order_to_trade_ratio(window_only=False)
+        
+        # Calculate current MTM PnL for final assessment
+        if self.pnl_history:
+            final_pnl = self.pnl_history[-1][1]
+        else:
+            final_pnl = 0.0
+        
+        # Determine performance grade based on realistic simulation benchmarks
+        performance_grade = "Poor"
+        if sharpe >= 0.8 and win_rate >= 52 and self.max_drawdown_observed <= 0.03 and ot_ratio <= 15:
+            performance_grade = "Excellent"
+        elif sharpe >= 0.5 and win_rate >= 50 and self.max_drawdown_observed <= 0.05 and ot_ratio <= 25:
+            performance_grade = "Good"
+        elif sharpe >= 0.2 and win_rate >= 48 and self.max_drawdown_observed <= 0.08:
+            performance_grade = "Acceptable"
+        
+        return {
+            'session_duration_hours': round(session_duration, 2),
+            'sharpe_ratio': round(sharpe, 3),
+            'win_rate_pct': round(win_rate, 1),
+            'max_drawdown_pct': round(self.max_drawdown_observed * 100, 3),
+            'total_trades': self.trades_total,
+            'total_orders_sent': self.orders_sent,
+            'order_to_trade_ratio': round(ot_ratio, 1),
+            'performance_grade': performance_grade,
+            'spread_capture_pnl': round(self.spread_capture_pnl, 2),
+            'final_mtm_pnl': round(final_pnl, 2),
+            'total_fees_paid': round(self.total_fees_paid, 4),
+            'pnl_samples': len(self.pnl_history)
+        }
     

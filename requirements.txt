@@ -1,0 +1,42 @@
+# Core data processing and analysis
+pandas>=2.0.0
+
+# WebSocket client for real-time data streaming
+websockets>=11.0.0
+
+# Async I/O support (included in Python 3.7+, but specifying for clarity)
+# asyncio is built-in, no need to install
+
+# JSON handling (built-in)
+# json is built-in, no need to install
+
+# Date and time handling (built-in)
+# datetime is built-in, no need to install
+
+# Operating system interface (built-in)
+# os is built-in, no need to install
+
+# Error traceback (built-in)
+# traceback is built-in, no need to install
+
+# Signal handling (built-in)
+# signal is built-in, no need to install
+
+# System-specific parameters (built-in)
+# sys is built-in, no need to install
+
+# Statistics functions (built-in)
+# statistics is built-in, no need to install
+
+# Copy operations (built-in)
+# copy is built-in, no need to install
+
+# Parquet file format support (dependency of pandas)
+pyarrow>=12.0.0
+
+# Optional: For better performance with pandas
+fastparquet>=0.8.0
+
+# Optional: For development and testing
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
