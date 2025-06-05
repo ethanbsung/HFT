@@ -68,7 +68,7 @@ class Orderbookstream:
                         bids_raw = [[level["px"], level["sz"]] for level in data["levels"][0]]
                         asks_raw = [[level["px"], level["sz"]] for level in data["levels"][1]]
                         
-                        # Convert Hyperliquid timestamp (seconds) to datetime
+                        # Convert Hyperliquid timestamp (milliseconds) to datetime
                         timestamp = datetime.fromtimestamp(data["time"] / 1000, tz=timezone.utc)
 
                         if not bids_raw or not asks_raw:
@@ -262,7 +262,7 @@ class Orderbookstream:
                         self.quote_engine.print_status(mid_price=(base_best_bid_price + base_best_ask_price) / 2)
 
                 except websockets.exceptions.ConnectionClosed:
-                    print(f"Websocket connection closed to {self._uri}. Reconnecting...")
+                    print(f"WebSocket connection closed to {self._uri}. Reconnecting...")
                     await asyncio.sleep(5)
                     break
                 except Exception as e:

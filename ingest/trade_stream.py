@@ -5,6 +5,7 @@ import json
 import os
 from datetime import datetime, timezone
 from utils.quote_engine import QuoteEngine
+import os
 
 class Tradestream:
     def __init__(self, symbol: str = "BTC", quote_engine=None):
@@ -12,7 +13,6 @@ class Tradestream:
         # Updated to Hyperliquid WebSocket URL
         self._uri = "wss://api.hyperliquid.xyz/ws"
         self.quote_engine = quote_engine
-        # Ensure the trades directory exists
         os.makedirs("data/trades", exist_ok=True)
     
     async def load_data(self):
