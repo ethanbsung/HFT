@@ -2,6 +2,7 @@ import websockets
 import asyncio
 import pandas as pd
 import json
+import os
 from datetime import datetime, timezone
 from utils.quote_engine import QuoteEngine
 
@@ -11,6 +12,8 @@ class Tradestream:
         # Updated to Hyperliquid WebSocket URL
         self._uri = "wss://api.hyperliquid.xyz/ws"
         self.quote_engine = quote_engine
+        # Ensure the trades directory exists
+        os.makedirs("data/trades", exist_ok=True)
     
     async def load_data(self):
         trades = []
