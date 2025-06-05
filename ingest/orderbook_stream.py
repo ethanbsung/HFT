@@ -262,7 +262,7 @@ class Orderbookstream:
                         self.quote_engine.print_status(mid_price=(base_best_bid_price + base_best_ask_price) / 2)
 
                 except websockets.exceptions.ConnectionClosed:
-                    print(f"Websocket connection closed to {self._uri}. Reconnecting...")
+                    print(f"WebSocket connection closed to {self._uri}. Reconnecting...")
                     await asyncio.sleep(5)
                     break
                 except Exception as e:
