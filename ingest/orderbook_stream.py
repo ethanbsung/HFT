@@ -68,7 +68,7 @@ class Orderbookstream:
                         bids_raw = [[level["px"], level["sz"]] for level in data["levels"][0]]
                         asks_raw = [[level["px"], level["sz"]] for level in data["levels"][1]]
                         
-                        # Convert Hyperliquid timestamp (seconds) to datetime
+                        # Convert Hyperliquid timestamp (milliseconds) to datetime
                         timestamp = datetime.fromtimestamp(data["time"] / 1000, tz=timezone.utc)
 
                         if not bids_raw or not asks_raw:
