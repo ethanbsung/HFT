@@ -266,10 +266,4 @@ hft-system/
 - **Advanced Analytics**: Real-time market impact analysis and alpha generation
 - **Cloud Deployment**: Containerized deployment with auto-scaling capabilities
 
-## 📜 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
 *Built with precision, engineered for performance, designed for institutional trading.*
