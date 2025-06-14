@@ -56,6 +56,9 @@ class Orderbookstream:
                     
                     # Handle l2Book updates
                     if message.get("channel") == "l2Book":
+                        # Start latency tracking for market data processing
+                        self.quote_engine._start_market_data_processing()
+                        
                         data = message["data"]
                         
                         # Extract orderbook data from Hyperliquid format
@@ -102,15 +105,11 @@ class Orderbookstream:
                         current_position = self.quote_engine.get_position()
                         inventory_deviation = current_position - self.target_inventory
 
-                        skew_ticks = inventory_deviation * self.inventory_tick_skew_per_unit
+                        # Use risk manager's inventory management for position skewing
+                        bid_skew, ask_skew = self.quote_engine.get_risk_adjusted_skew(base_best_bid_price, base_best_ask_price)
 
-                        if skew_ticks > self.max_inventory_skew_ticks:
-                            skew_ticks = self.max_inventory_skew_ticks
-                        elif skew_ticks < -self.max_inventory_skew_ticks:
-                            skew_ticks = -self.max_inventory_skew_ticks
-
-                        target_bid_price = round_to_tick(base_best_bid_price - (skew_ticks * tick_size), tick_size)
-                        target_ask_price = round_to_tick(base_best_ask_price - (skew_ticks * tick_size), tick_size)
+                        target_bid_price = round_to_tick(base_best_bid_price + bid_skew, tick_size)
+                        target_ask_price = round_to_tick(base_best_ask_price + ask_skew, tick_size)
 
                         if target_bid_price >= target_ask_price:
                             print(f"Warning: Skewed bid ({target_bid_price}) is >= skewed ask ({target_ask_price}). Using BBO.")
@@ -252,10 +251,16 @@ class Orderbookstream:
                         if len(self.orderbook_features) >= self.batch_size:
                             await self._save_to_parquet()
                         
+                        # Complete tick-to-trade latency measurement after order decisions are made
+                        self.quote_engine._complete_tick_to_trade()
+                        
+                        # Complete market data processing latency measurement
+                        self.quote_engine._complete_market_data_processing()
+                        
                         # Only print status and detailed info when trading events occur or on interval
                         if self.quote_engine.should_print_status():
                             print(
-                                f"[{timestamp.isoformat()}] Inv:{current_position:.3f} Dev:{inventory_deviation:.3f} SkewTks:{skew_ticks:.1f} "
+                                f"[{timestamp.isoformat()}] Inv:{current_position:.3f} Dev:{inventory_deviation:.3f} BidSkew:{bid_skew:.3f} AskSkew:{ask_skew:.3f} "
                                 f"OBI:{obi:>5.2f} Strat:{current_signal_state:<22} "
                                 f"Prices (Base B/A): {base_best_bid_price:>8.2f}/{base_best_ask_price:>8.2f} "
                                 f"(Tgt B/A): {target_bid_price:>8.2f}/{target_ask_price:>8.2f}"
