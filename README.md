@@ -184,8 +184,8 @@ asyncio support
 ### Quick Start
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/hft-system.git
-cd hft-system
+git clone https://github.com/ethanbsung/HFT.git
+cd HFT
 
 # Install dependencies
 pip install -r requirements.txt
