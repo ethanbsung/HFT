@@ -146,6 +146,11 @@ class Orderbookstream:
                         if current_signal_state != "HOLD_CROSSED_SKEW":
                             # Position-aware asymmetric OBI-based risk management
                             current_position = self.quote_engine.get_position()
+                            inventory_deviation = current_position - self.target_inventory
+                            skew_ticks = min(
+                                self.max_inventory_skew_ticks,
+                                abs(inventory_deviation) * self.inventory_tick_skew_per_unit,
+                            )
                             
                             # Asymmetric thresholds based on position
                             # Adjusted condition for larger desired_order_size
