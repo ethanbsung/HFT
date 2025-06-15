@@ -344,7 +344,10 @@ class QuoteEngine:
             return False
 
         mid_price_at_entry = (float(bids[0][0]) + float(asks[0][0])) / 2
-        
+
+        # Record this attempt for order rate limiting
+        self.risk_manager.record_order_attempt()
+
         # Pre-trade risk check
         current_equity = self.mark_to_market(mid_price_at_entry)
         latency_ms = 0.0
