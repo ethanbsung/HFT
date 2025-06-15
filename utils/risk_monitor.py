@@ -93,7 +93,7 @@ class RiskMonitor:
         score -= active_breaches * 15
         
         # Deduct for emergency conditions
-        if risk_summary.get('emergency_stops', 0) > 0:
+        if self.quote_engine and self.quote_engine.risk_manager.emergency_risk_shutdown():
             score -= 30
         
         # Deduct for excessive O:T ratio
