@@ -1,4 +1,132 @@
+# Python
 venv/
-data/
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# C++ Build Artifacts - Only ignore generated files in specific locations
+cpp/build/
+cpp/cmake_build/
+# Object files anywhere
+*.o
+*.obj
+cpp/*.a
+cpp/*.lib
+cpp/*.so.*
+cpp/*.dylib
+cpp/*.dll
+cpp/*.exe
+cpp/CMakeCache.txt
+cpp/CMakeFiles/
+cpp/cmake_install.cmake
+# Only ignore generated Makefiles, not source Makefiles
+cpp/build/**/Makefile
+cpp/cmake_build/**/Makefile
+cpp/src/**/Makefile
+cpp/*.cmake
+# Exclude important CMake files from being ignored
+!**/CMakeLists.txt
+
+# pybind11 Build Artifacts
+bindings/build/
+bindings/dist/
+bindings/*.egg-info/
+bindings/*.so
+bindings/*.pyd
+hft_engine*.so
+hft_engine*.pyd
+*.cpp.o
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.vs/
+*.vcxproj*
+*.sln
+*.suo
+*.user
+
+# OS Files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Data and Logs
+data/
+logs/
+*.log
+*.parquet
+*.csv
+
+# Benchmarking Results
+benchmarks/results/
+benchmarks/output/
+*.benchmark
+*.perf
+
+# Profiling and Debugging
+*.prof
+*.pstats
+callgrind.out.*
+massif.out.*
+core
+core.*
+gmon.out
+perf.data*
+
+# Temporary Files
+tmp/
+temp/
+*.tmp
+*.bak
+*.backup
+
+# Documentation Build
+docs/_build/
+site/
+
+# Virtual Environments
+env/
+ENV/
+.env
+.venv
+
+# Package Management
+*.lock
+Pipfile.lock
+
+# Additional C++ specific
+*.dSYM/
+*.gcov
+*.gcda
+*.gcno
+compile_commands.json
+.ninja_deps
+.ninja_log
+build.ninja
+
+# Mac specific for C++
+*.xcodeproj/
+*.xcworkspace/
+
+# Windows specific for C++
+*.pdb
+*.ilk
+*.exp
