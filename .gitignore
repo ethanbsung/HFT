@@ -36,6 +36,8 @@ cpp/src/**/Makefile
 cpp/*.cmake
 # Exclude important CMake files from being ignored
 !**/CMakeLists.txt
+cpp/obj/
+cpp/lib/
 
 # pybind11 Build Artifacts
 bindings/build/
