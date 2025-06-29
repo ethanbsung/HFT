@@ -143,9 +143,11 @@ public:
     SystemMemoryStats get_system_stats() const;
     void print_memory_report() const;
     
+public:
+    ~MemoryManager() = default;
+    
 private:
     MemoryManager();
-    ~MemoryManager() = default;
     
     OrderPool order_pool_;
     mutable std::atomic<size_t> peak_memory_usage_;
