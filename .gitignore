@@ -132,3 +132,7 @@ build.ninja
 *.pdb
 *.ilk
 *.exp
+
+.env
+package-lock.json
+package.json

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone, timedelta
+from execution_simulator import ExecutionSimulator
 import copy
 from collections import deque
 import statistics
@@ -296,16 +297,18 @@ class Order:
         self.placement_complete_time = None  # When order placement completed
 
 class QuoteEngine:
-    TICK = 0.01
+    TICK = 0.0001  # DEXT-USD quote increment from trading pair info
     BASE_MAX_TICKS_AWAY = 15
     ADAPTIVE_MAX_TICKS_MULTIPLIER = 2.0
     ORDER_TTL_SEC = 120.0
     MIN_ORDER_REPLACE_INTERVAL = 0.5
     MAKER_FEE_RATE = 0.0000
 
-    def __init__(self, max_position_size=0.05):
+    def __init__(self, max_position_size=0.05, exec_sim: ExecutionSimulator | None = None):
         self.position = 0
         self.cash = 100_000.0
+        # Execution simulator for paper‑trading hooks
+        self.exec_sim = exec_sim
         self.initial_cash = self.cash
         self.open_bid_order = None
         self.open_ask_order = None
@@ -540,11 +543,29 @@ class QuoteEngine:
         
         if side == "buy":
             self.open_bid_order = new_order
+            # --- Simulator hook ------------------------------------------------
+            if self.exec_sim:
+                self.exec_sim.submit_order({
+                    'id': new_order.order_id,
+                    'side': side,
+                    'qty': size,
+                    'price': price
+                })
+            # -------------------------------------------------------------------
             print(f"Placed BUY order: {size} @ {price}, queue ahead: {queue_ahead:.6f}, mid_at_entry: {mid_price_at_entry:.2f} [Latency: {placement_latency_us/1000:.3f}ms]")
             self.status_print_events.add("order_placed")
             self._track_order_sent("new_bid")
         elif side == "sell":
             self.open_ask_order = new_order
+            # --- Simulator hook ------------------------------------------------
+            if self.exec_sim:
+                self.exec_sim.submit_order({
+                    'id': new_order.order_id,
+                    'side': side,
+                    'qty': size,
+                    'price': price
+                })
+            # -------------------------------------------------------------------
             print(f"Placed SELL order: {size} @ {price}, queue ahead: {queue_ahead:.6f}, mid_at_entry: {mid_price_at_entry:.2f} [Latency: {placement_latency_us/1000:.3f}ms]")
             self.status_print_events.add("order_placed")
             self._track_order_sent("new_ask")
@@ -1030,7 +1051,8 @@ class QuoteEngine:
             # Simulate realistic cancel latency
             cancel_latency_us = self.latency_tracker.simulate_realistic_latency('order_cancel')
             self.latency_tracker.add_order_cancel_latency(cancel_latency_us)
-            
+            if self.exec_sim:
+                self.exec_sim.cancel_order(self.open_bid_order.order_id)
             print(f"Cancelled BUY order @ {self.open_bid_order.price}{' (MANUAL)' if manual_cancel else ' (AUTO)'}{reason_str} [Cancel Latency: {cancel_latency_us/1000:.3f}ms]")
             self.open_bid_order = None
             self.status_print_events.add("order_cancelled")
@@ -1038,7 +1060,8 @@ class QuoteEngine:
             # Simulate realistic cancel latency
             cancel_latency_us = self.latency_tracker.simulate_realistic_latency('order_cancel')
             self.latency_tracker.add_order_cancel_latency(cancel_latency_us)
-            
+            if self.exec_sim:
+                self.exec_sim.cancel_order(self.open_ask_order.order_id)
             print(f"Cancelled SELL order @ {self.open_ask_order.price}{' (MANUAL)' if manual_cancel else ' (AUTO)'}{reason_str} [Cancel Latency: {cancel_latency_us/1000:.3f}ms]")
             self.open_ask_order = None
             self.status_print_events.add("order_cancelled")

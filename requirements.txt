@@ -40,3 +40,13 @@ fastparquet>=0.8.0
 # Optional: For development and testing
 pytest>=7.0.0
 pytest-asyncio>=0.21.0
+
+# Added from the code block
+asyncio-mqtt
+numpy
+matplotlib
+seaborn
+parquet
+PyJWT
+python-dotenv
+cryptography

@@ -16,9 +16,9 @@ LatencyTracker::LatencyTracker(size_t window_size)
     // HINT: Use a range-based for loop over latency_windows_
     // HINT: Each deque should have maxlen = window_size
     // 
-    // for (auto& window : latency_windows_) {
-    //     // Set up each rolling window...
-    // }
+    for (auto& window : latency_windows_) {
+        
+    }
     
     // TODO 2: Reserve space for spike history for performance
     // HINT: spike_history_.reserve(???)

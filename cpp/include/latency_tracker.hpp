@@ -1,12 +1,12 @@
 #pragma once
 
 #include "types.hpp"  // Our foundation types
-#include <deque>      // LEARNING: Double-ended queue for rolling windows
-#include <vector>     // LEARNING: Dynamic arrays for data storage
-#include <array>      // LEARNING: Fixed-size arrays for performance
+#include <deque>
+#include <vector>
+#include <array>
 #include <algorithm>  // LEARNING: STL algorithms (sort, nth_element)
 #include <numeric>    // LEARNING: Mathematical operations (accumulate)
-#include <string>     // LEARNING: String operations
+#include <string>
 #include <iostream>   // LEARNING: Input/output operations
 #include <iomanip>    // LEARNING: Output formatting
 
