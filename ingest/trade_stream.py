@@ -6,12 +6,13 @@ import os
 from coinbase.websocket import WSClient
 
 class Tradestream:
-    def __init__(self, symbol: str = "BTC-USD", quote_engine=None, exec_sim=None, api_key: str = None, api_secret: str = None):
+    def __init__(self, symbol: str = "BTC-USD", quote_engine=None, exec_sim=None, api_key: str = None, api_secret: str = None, key_file: str = None):
         self._symbol = symbol
         self.quote_engine = quote_engine
         self.exec_sim = exec_sim
         self.api_key = api_key
         self.api_secret = api_secret
+        self.key_file = key_file
         self.trades = []
         self.batch_size = 1000
         self.file_counter = 0
@@ -33,8 +34,8 @@ class Tradestream:
     async def stream_data(self):
         """Stream real-time trade data from Coinbase Advanced Trade WebSocket with reconnection"""
         
-        if not self.api_key or not self.api_secret:
-            print("❌ ERROR: API key and secret required for trade stream")
+        if not self.key_file and (not self.api_key or not self.api_secret):
+            print("❌ ERROR: API credentials required for trade stream")
             return
         
         print(f"🚀 Starting Coinbase trade stream for {self._symbol}")
@@ -69,14 +70,23 @@ class Tradestream:
                 print(f"🔄 Trade stream connection attempt {reconnect_attempts + 1}/{max_reconnect_attempts}")
                 
                 # Create WebSocket client for trade data
-                self.ws_client = WSClient(
-                    api_key=self.api_key,
-                    api_secret=self.api_secret,
-                    on_message=on_message,
-                    on_open=on_open,
-                    on_close=on_close,
-                    verbose=False  # Less verbose for trades
-                )
+                # Only pass non-None parameters to avoid conflicts
+                ws_kwargs = {
+                    'on_message': on_message,
+                    'on_open': on_open,
+                    'on_close': on_close,
+                    'verbose': False  # Less verbose for trades
+                }
+                
+                if self.key_file:
+                    ws_kwargs['key_file'] = self.key_file
+                    ws_kwargs['api_key'] = None  # Explicitly set to None to override defaults
+                    ws_kwargs['api_secret'] = None
+                elif self.api_key and self.api_secret:
+                    ws_kwargs['api_key'] = self.api_key
+                    ws_kwargs['api_secret'] = self.api_secret
+                
+                self.ws_client = WSClient(**ws_kwargs)
                 
                 # Open connection
                 self.ws_client.open()
@@ -163,9 +173,8 @@ class Tradestream:
             if self.exec_sim:
                 self.exec_sim.on_trade(trade_price, trade_size, trade_side, ts)
             
-            # Optional: Print trade info (reduce frequency for performance)
-            if len(self.trades) % 10 == 0:  # Print every 10th trade
-                print(f"📈 TRADE: {trade_side.upper()} {trade_size:.1f} @ {trade_price:.4f} | Total trades: {len(self.trades)}")
+            
+            print(f"📈 TRADE: {trade_side.upper()} {trade_size:.1f} @ {trade_price:.4f} | Total trades: {len(self.trades)}")
             
             # Save batch periodically with proper task management
             if len(self.trades) >= self.batch_size:

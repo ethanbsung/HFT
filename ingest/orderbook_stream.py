@@ -13,10 +13,11 @@ def round_to_tick(price: float, tick_size: float) -> float:
     return round(price / tick_size) * tick_size
 
 class Orderbookstream:
-    def __init__(self, symbol: str = "BTC-USD", exec_sim=None, api_key: str = None, api_secret: str = None):
+    def __init__(self, symbol: str = "BTC-USD", exec_sim=None, api_key: str = None, api_secret: str = None, key_file: str = None):
         self._symbol = symbol
         self.api_key = api_key
         self.api_secret = api_secret
+        self.key_file = key_file
         self.orderbook_raw = []
         self.orderbook_features = []
         self.batch_size = 1000
@@ -43,9 +44,9 @@ class Orderbookstream:
     async def stream_data(self):
         """Stream data using official Coinbase Advanced SDK WebSocket client with reconnection."""
         
-        if not self.api_key or not self.api_secret:
-            print("❌ ERROR: API key and secret required for Advanced Trade WebSocket")
-            print("💡 Please provide api_key and api_secret to Orderbookstream constructor")
+        if not self.key_file and (not self.api_key or not self.api_secret):
+            print("❌ ERROR: API credentials required for Advanced Trade WebSocket")
+            print("💡 Please provide either key_file or api_key+api_secret to Orderbookstream constructor")
             return
         
         print(f"🚀 Starting Coinbase Advanced Trade WebSocket for {self._symbol}")
@@ -84,14 +85,30 @@ class Orderbookstream:
                 print(f"🔄 Connection attempt {reconnect_attempts + 1}/{max_reconnect_attempts}")
                 
                 # Create the official Coinbase WebSocket client
-                self.ws_client = WSClient(
-                    api_key=self.api_key,
-                    api_secret=self.api_secret,
-                    on_message=on_message,
-                    on_open=on_open,
-                    on_close=on_close,
-                    verbose=True  # Enable debug logging
-                )
+                # Only pass non-None parameters to avoid conflicts
+                ws_kwargs = {
+                    'on_message': on_message,
+                    'on_open': on_open,
+                    'on_close': on_close,
+                    'verbose': True  # Enable debug logging
+                }
+                
+                print(f"🔍 Debug - key_file: {self.key_file}")
+                print(f"🔍 Debug - api_key: {self.api_key}")
+                print(f"🔍 Debug - api_secret present: {bool(self.api_secret)}")
+                
+                if self.key_file:
+                    ws_kwargs['key_file'] = self.key_file
+                    ws_kwargs['api_key'] = None  # Explicitly set to None to override defaults
+                    ws_kwargs['api_secret'] = None
+                    print(f"🔍 Using key_file: {self.key_file}")
+                elif self.api_key and self.api_secret:
+                    ws_kwargs['api_key'] = self.api_key
+                    ws_kwargs['api_secret'] = self.api_secret
+                    print(f"🔍 Using api_key/secret")
+                
+                print(f"🔍 Final ws_kwargs keys: {list(ws_kwargs.keys())}")
+                self.ws_client = WSClient(**ws_kwargs)
                 
                 # Open connection
                 self.ws_client.open()
@@ -137,7 +154,7 @@ class Orderbookstream:
         """Handle incoming WebSocket messages from the official SDK"""
         msg_type = message.get('channel', message.get('type', 'unknown'))
         
-        print(f"📨 WS Message - Channel: {msg_type} | Product: {message.get('product_id', 'N/A')}")
+        # print(f"📨 WS Message - Channel: {msg_type} | Product: {message.get('product_id', 'N/A')}")
         
         # Handle different message types
         if msg_type == 'l2_data':
@@ -198,20 +215,31 @@ class Orderbookstream:
             if asks_raw:
                 print(f"📉 Best Ask: {asks_raw[0][0]}")
             
-            # CRITICAL FIX: Use thread-safe queue instead of dangerous event loop creation
-            # Schedule processing on the main event loop instead of creating new ones
+            # CRITICAL FIX: Use consistent async processing with proper error handling
+            # Always use the main event loop for consistent timing behavior
             try:
                 # Get the main event loop running in the main thread
                 main_loop = asyncio.get_running_loop()
                 # Schedule the coroutine to run on the main loop thread-safely
-                asyncio.run_coroutine_threadsafe(
+                future = asyncio.run_coroutine_threadsafe(
                     self._process_orderbook_update(orderbook), 
                     main_loop
                 )
-            except RuntimeError:
-                # Fallback: If no running loop, process synchronously (safer than new loop)
-                print("⚠️ No running event loop found, processing orderbook synchronously")
-                # Call synchronous methods instead of async ones
+                # Don't wait for completion to avoid blocking the WebSocket thread
+                # but do add error handling
+                def handle_completion(future):
+                    try:
+                        future.result()  # Raises exception if processing failed
+                    except Exception as e:
+                        print(f"❌ Async orderbook processing failed: {e}")
+                        # Fallback to sync processing for this update
+                        self._process_orderbook_sync_safe(orderbook)
+                        
+                future.add_done_callback(handle_completion)
+                
+            except RuntimeError as e:
+                # No running event loop - this should be rare but handle gracefully
+                print(f"⚠️ No running event loop found: {e}, processing orderbook synchronously")
                 self._process_orderbook_sync_safe(orderbook)
     
     def _handle_orderbook_update(self, update):
@@ -249,9 +277,9 @@ class Orderbookstream:
             print(f"❌ Error in sync orderbook processing: {e}")
     
     def _process_orderbook_sync(self, orderbook):
-        """DEPRECATED: Dangerous synchronous wrapper - use thread-safe scheduling instead"""
-        print("⚠️ WARNING: Using deprecated sync wrapper - this can cause deadlocks")
-        # Keep for backward compatibility but don't use the dangerous event loop creation
+        """DEPRECATED: Dangerous synchronous wrapper - redirects to safe sync processing"""
+        print("⚠️ WARNING: Using deprecated sync wrapper - redirecting to safe sync processing")
+        # Always use the safe synchronous processing method
         self._process_orderbook_sync_safe(orderbook)
     
     def stop(self):

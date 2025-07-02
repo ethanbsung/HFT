@@ -8,10 +8,19 @@ import os
 from dotenv import load_dotenv
 
 async def main():
-    load_dotenv()
+    # Use JSON key file instead of environment variables for better PEM handling
+    # This avoids issues with multiline PEM keys in .env files
+    key_file_path = "cdp_api_key.json"
     
-    api_key = os.getenv('COINBASE_API_KEY')
-    api_secret = os.getenv('COINBASE_API_SECRET')
+    # Fallback to environment variables if JSON file doesn't exist
+    if not os.path.exists(key_file_path):
+        load_dotenv()
+        api_key = os.getenv('COINBASE_API_KEY')
+        api_secret = os.getenv('COINBASE_API_SECRET')
+        key_file_path = None  # Don't use key file if falling back to env vars
+    else:
+        api_key = None
+        api_secret = None
     
     # Now using hybrid approach, can use any symbol
     test_symbol = "DEXT-USD"  # Back to your original symbol
@@ -19,9 +28,20 @@ async def main():
     sim = ExecutionSimulator()
     print(f"🚀 Starting market making simulation for {test_symbol}...")
     print(f"📊 Initial state - Position: {sim.position:.6f}, Cash: {sim.cash:.2f}")
+    print(f"🔧 Debug mode: Watch for these key indicators:")
+    print(f"   💰 'FILL P&L' = Spread capture and fees tracking")
+    print(f"   📊 'EXEC_SIM: Fill calculation' = Order fill logic")
+    print(f"   🔄 'SYNC:' = Order state synchronization")
+    print(f"   📈 Status line every ~10s = Overall system health")
+    print(f"   🎯 Comprehensive report on exit = Final performance\n")
     
-    ob = Orderbookstream(symbol=test_symbol, exec_sim=sim, api_key=api_key, api_secret=api_secret)
-    ts = Tradestream(symbol=test_symbol, quote_engine=ob.quote_engine, exec_sim=sim, api_key=api_key, api_secret=api_secret)
+    # Pass key file path if available, otherwise use individual credentials
+    if key_file_path:
+        ob = Orderbookstream(symbol=test_symbol, exec_sim=sim, key_file=key_file_path)
+        ts = Tradestream(symbol=test_symbol, quote_engine=ob.quote_engine, exec_sim=sim, key_file=key_file_path)
+    else:
+        ob = Orderbookstream(symbol=test_symbol, exec_sim=sim, api_key=api_key, api_secret=api_secret)
+        ts = Tradestream(symbol=test_symbol, quote_engine=ob.quote_engine, exec_sim=sim, api_key=api_key, api_secret=api_secret)
     
     # CRITICAL FIX: Ensure ExecutionSimulator callback is properly set up
     # This guarantees order state synchronization between QuoteEngine and ExecutionSimulator

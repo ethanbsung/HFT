@@ -227,36 +227,65 @@ class ExecutionSimulator:
                     (order.side == "sell" and trade_side == "buy")):
                     
                     # Reduce our queue position by the trade amount
+                    old_queue = order.queue_ahead
                     new_queue = max(0, order.queue_ahead - trade_qty)
                     
                     # Update the order with new queue position
                     updated_order = order._replace(queue_ahead=new_queue)
                     self.live_orders[order_id] = updated_order
                     
+                    # Debug: Show queue progression for significant moves
+                    if old_queue > 0 and new_queue == 0:
+                        print(f"📊 EXEC_SIM: {order.side.upper()} order queue: {old_queue:.1f} → {new_queue:.1f} (trade: {trade_qty:.1f})")
+                    
                     # Check for fills when queue_ahead <= 0
                     if new_queue <= 0:
-                        # CRITICAL FIX: Realistic fill quantity - can't fill more than order size or available volume
-                        # In real trading, you can only get filled for the amount that traded through your level
-                        available_fill_volume = trade_qty + abs(new_queue)  # Volume that reached us
-                        fill_qty = min(order.qty, available_fill_volume)
-                        # Additional safety: can't fill more than what actually traded
-                        fill_qty = min(fill_qty, trade_qty)
+                        # CRITICAL FIX: Correct fill logic based on actual volume that reaches our order
+                        # When new_queue <= 0, it means trade volume reached our order position
+                        # 
+                        # The volume that reached us is the amount that traded beyond our initial queue position
+                        # Example: old_queue = 5, trade_qty = 8
+                        # Volume that reached us = trade_qty - old_queue = 8 - 5 = 3 units
+                        #
+                        # This is the maximum we can be filled with - we can never fill more than
+                        # the volume that actually passed through our queue position
+                        volume_that_reached_us = max(0, trade_qty - old_queue)
                         
-                        self._execute_fill(order, fill_qty, ts)
+                        # We can fill at most:
+                        # 1. Our remaining order quantity
+                        # 2. The volume that actually reached our position in the queue
+                        fill_qty = min(order.qty, volume_that_reached_us)
                         
-                        if fill_qty >= order.qty:
-                            to_remove.append(order_id)
-                        else:
-                            # CRITICAL FIX: Partial fills maintain queue priority for remaining size
-                            # In real trading, you keep your place in line for unfilled quantity
-                            # Only reset queue if we got filled more than our queue position (overfill scenario)
-                            remaining_queue = 0.0  # We're now at front of queue for remaining size
+                        # Additional safety: ensure fill quantity is positive
+                        fill_qty = max(0, fill_qty)
+                        
+                        if fill_qty > 0:
+                            # Debug: Show fill calculation for verification
+                            print(f"📊 EXEC_SIM: Fill calculation - Old queue: {old_queue:.1f}, Trade: {trade_qty:.1f}, Volume reached us: {volume_that_reached_us:.1f}, Fill qty: {fill_qty:.1f}")
+                            self._execute_fill(order, fill_qty, ts)
                             
-                            partial_order = updated_order._replace(
-                                qty=order.qty - fill_qty,
-                                queue_ahead=remaining_queue  # Maintain queue priority after partial fill
-                            )
-                            self.live_orders[order_id] = partial_order
+                            # CRITICAL FIX: Handle order completion/partial fill logic correctly
+                            if fill_qty >= order.qty:
+                                # Order completely filled - remove it
+                                to_remove.append(order_id)
+                                print(f"📊 EXEC_SIM: Order {order.side.upper()} fully filled, removing from live orders")
+                            else:
+                                # Partial fill - update order with remaining quantity
+                                # After a partial fill, we maintain our position at the front of the queue
+                                # for the remaining unfilled quantity
+                                remaining_qty = order.qty - fill_qty
+                                remaining_queue = 0.0  # We're now at front of queue for remaining size
+                                
+                                partial_order = updated_order._replace(
+                                    qty=remaining_qty,
+                                    queue_ahead=remaining_queue
+                                )
+                                self.live_orders[order_id] = partial_order
+                                
+                                print(f"📊 EXEC_SIM: Partial fill {order.side.upper()} {fill_qty:.1f}/{order.qty:.1f} @ {order.price:.4f}, {remaining_qty:.1f} remaining")
+                        else:
+                            # No fill occurred - just queue position update
+                            print(f"📊 EXEC_SIM: No fill - Old queue: {old_queue:.1f}, Trade: {trade_qty:.1f}, Volume reached us: {volume_that_reached_us:.1f}")
         
         for order_id in to_remove:
             self.live_orders.pop(order_id, None)
@@ -300,7 +329,8 @@ class ExecutionSimulator:
                 'side': order.side,
                 'fill_qty': fill_qty,
                 'remaining_qty': order.qty - fill_qty,
-                'price': order.price
+                'price': order.price,
+                'fee': fee  # CRITICAL FIX: Pass fee to QuoteEngine for tracking
             })
         
         # CRITICAL FIX: Update risk manager with new position and equity

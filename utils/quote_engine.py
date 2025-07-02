@@ -371,15 +371,17 @@ class QuoteEngine:
     def _complete_market_data_processing(self):
         """Mark the completion of market data processing and record latency"""
         if self.market_data_receive_time:
-            # Simulate realistic market data processing latency instead of measuring actual Python execution time
-            latency_us = self.latency_tracker.simulate_realistic_latency('market_data')
+            # Measure actual market data processing latency
+            end_time = datetime.now(timezone.utc)
+            latency_us = (end_time - self.market_data_receive_time).total_seconds() * 1_000_000
             self.latency_tracker.add_market_data_latency(latency_us)
             
     def _complete_tick_to_trade(self):
         """Mark completion of tick-to-trade decision and record latency"""
         if self.last_tick_to_trade_start:
-            # Simulate realistic tick-to-trade latency instead of measuring Python execution time
-            latency_us = self.latency_tracker.simulate_realistic_latency('tick_to_trade')
+            # Measure actual tick-to-trade decision latency
+            end_time = datetime.now(timezone.utc)
+            latency_us = (end_time - self.last_tick_to_trade_start).total_seconds() * 1_000_000
             self.latency_tracker.add_tick_to_trade_latency(latency_us)
 
     def _should_replace_order(self, side, target_price, current_order):
@@ -486,17 +488,21 @@ class QuoteEngine:
             print(f"❌ Rejected {side} order: {size:.4f} DEXT below minimum {min_order_size_dext} DEXT")
             return False
 
-        # Pre-trade risk check
-        current_equity = self.mark_to_market(mid_price_at_entry)
+        # Pre-trade risk check using actual current position from ExecutionSimulator
+        current_position = self.get_position()  # Get actual position from ExecutionSimulator
+        current_equity = self.mark_to_market(mid_price_at_entry)  # Uses ExecutionSimulator state
         latency_ms = 0.0
         if self.latency_tracker.order_placement_latencies:
             latency_ms = self.latency_tracker.order_placement_latencies[-1] / 1000  # Convert to ms
+        
+        # CRITICAL FIX: Update risk manager with current state before risk check
+        self.risk_manager.update_position_and_pnl(current_position, current_equity)
         
         can_trade, risk_details = self.risk_manager.check_pre_trade_risk(
             side=side, 
             size=size, 
             price=price,
-            current_position=self.position,
+            current_position=current_position,  # Use actual current position
             current_equity=current_equity,
             latency_ms=latency_ms
         )
@@ -507,8 +513,9 @@ class QuoteEngine:
             return False
 
         if side == "buy":
-            current_position = self.get_position()  # Get from ExecutionSimulator
+            # Position check already done above with risk manager
             if current_position + size > self.max_position_size:
+                print(f"❌ BUY order rejected: position limit exceeded ({current_position + size:.1f} > {self.max_position_size})")
                 return False
                 
             # Try to amend existing order first
@@ -525,8 +532,9 @@ class QuoteEngine:
             self.last_bid_replace_time = datetime.now(timezone.utc)
             
         elif side == "sell":
-            current_position = self.get_position()  # Get from ExecutionSimulator
+            # Position check already done above with risk manager
             if current_position - size < -self.max_position_size:
+                print(f"❌ SELL order rejected: position limit exceeded ({current_position - size:.1f} < {-self.max_position_size})")
                 return False
                 
             # Try to amend existing order first
@@ -573,8 +581,9 @@ class QuoteEngine:
         new_order.placement_start_time = placement_start_time
         new_order.placement_complete_time = datetime.now(timezone.utc)
         
-        # Simulate realistic order placement latency
-        placement_latency_us = self.latency_tracker.simulate_realistic_latency('order_placement')
+        # Measure actual order placement latency
+        placement_end_time = datetime.now(timezone.utc)
+        placement_latency_us = (placement_end_time - placement_start_time).total_seconds() * 1_000_000
         self.latency_tracker.add_order_placement_latency(placement_latency_us)
         
         if side == "buy":
@@ -609,7 +618,7 @@ class QuoteEngine:
         
     def _calculate_queue_position(self, side, price, orderbook):
         """
-        Calculate queue position - handle both existing and new price levels with realistic HFT assumptions
+        Calculate queue position based on realistic price-time priority logic
         """
         import random
         
@@ -619,53 +628,66 @@ class QuoteEngine:
         if not bids or not asks:
             return None
 
+        # Get current timestamp for time priority calculation
+        current_time = datetime.now(timezone.utc)
+        
         if side == "buy":
             # Find our price level in the bid stack
             for i, (bid_price, bid_vol) in enumerate(bids):
                 if self._same_price_level(price, float(bid_price)):
-                    # More realistic queue position - assume we're behind 15-25% of volume (not 85%)
-                    queue_multiplier = random.uniform(0.15, 0.25)
-                    queue_vol = float(bid_vol) * queue_multiplier
-                    return max(0.5, queue_vol)  # Min 0.5 DEXT queue
+                    # Realistic queue position based on when we arrive at this price level
+                    # In real markets, queue position depends on arrival time
+                    total_volume = float(bid_vol)
+                    
+                    # Estimate time-based queue position
+                    # Orders arriving later are further back in queue
+                    # Assume we're arriving "now" relative to existing orders
+                    # Conservative estimate: we're behind 70-90% of existing volume
+                    queue_percentile = random.uniform(0.70, 0.90)
+                    queue_ahead = total_volume * queue_percentile
+                    
+                    return max(0.1, queue_ahead)  # Min 0.1 DEXT queue
             
-            # Price not found in current orderbook - estimate based on market behavior
+            # Price not found in current orderbook - estimate based on distance from best
             best_bid = float(bids[0][0])
             if price <= best_bid and (best_bid - price) <= self.BASE_MAX_TICKS_AWAY * self.TICK:
                 ticks_away = round((best_bid - price) / self.TICK)
                 
-                if ticks_away == 0:  # Joining at best bid
-                    # Much more aggressive for best bid - we get decent queue position
+                if ticks_away == 0:  # Joining at best bid - worst case time priority
                     best_bid_vol = float(bids[0][1])
-                    queue_multiplier = random.uniform(0.10, 0.20)  # 10-20% instead of 40%
-                    return max(1.0, best_bid_vol * queue_multiplier)  # Min 1 DEXT queue
-                elif ticks_away == 1:  # One tick behind best
-                    return random.uniform(0.5, 2.0)  # Small random queue in DEXT
-                else:  # Further away
-                    return random.uniform(0.1, 1.0)  # Very small queue for distant levels
+                    # Since we're joining existing best bid, we're last in time priority
+                    queue_ahead = best_bid_vol * random.uniform(0.85, 0.95)
+                    return max(1.0, queue_ahead)
+                elif ticks_away == 1:  # One tick worse - likely alone or small queue
+                    return random.uniform(0.1, 1.0)
+                else:  # Further away - very small queue expected
+                    return random.uniform(0.05, 0.5)
             return None
         
         elif side == "sell":
             # Find our price level in the ask stack
             for i, (ask_price, ask_vol) in enumerate(asks):
                 if self._same_price_level(price, float(ask_price)):
-                    # More realistic queue position
-                    queue_multiplier = random.uniform(0.15, 0.25)
-                    queue_vol = float(ask_vol) * queue_multiplier
-                    return max(0.5, queue_vol)  # Min 0.5 DEXT queue
+                    # Same logic as buy side - time priority matters
+                    total_volume = float(ask_vol)
+                    queue_percentile = random.uniform(0.70, 0.90)
+                    queue_ahead = total_volume * queue_percentile
+                    
+                    return max(0.1, queue_ahead)
             
             # Price not found in current orderbook
             best_ask = float(asks[0][0])
             if price >= best_ask and (price - best_ask) <= self.BASE_MAX_TICKS_AWAY * self.TICK:
                 ticks_away = round((price - best_ask) / self.TICK)
                 
-                if ticks_away == 0:  # Joining at best ask
+                if ticks_away == 0:  # Joining at best ask - worst time priority
                     best_ask_vol = float(asks[0][1])
-                    queue_multiplier = random.uniform(0.10, 0.20)
-                    return max(1.0, best_ask_vol * queue_multiplier)  # Min 1 DEXT queue
-                elif ticks_away == 1:  # One tick above best
-                    return random.uniform(0.5, 2.0)  # Small random queue in DEXT
+                    queue_ahead = best_ask_vol * random.uniform(0.85, 0.95)
+                    return max(1.0, queue_ahead)
+                elif ticks_away == 1:  # One tick worse
+                    return random.uniform(0.1, 1.0)
                 else:  # Further away
-                    return random.uniform(0.1, 1.0)  # Very small queue for distant levels
+                    return random.uniform(0.05, 0.5)
             return None
         
         return None
@@ -758,16 +780,11 @@ class QuoteEngine:
                 # Volume decreased = people ahead of us got filled
                 volume_decrease = max(0, old_vol - current_vol)
                 
-                # CRITICAL FIX: Realistic queue movement - can't advance more than volume that left
+                # Realistic queue movement - advance by volume that disappeared, but no more
                 if volume_decrease > 0:
-                    # In real trading, you advance at most by the volume that disappeared
-                    # Add small randomness for market uncertainty but stay realistic
-                    queue_improvement = volume_decrease * random.uniform(0.8, 1.0)  # 80-100% of volume decrease
-                    order.current_queue = max(0, order.current_queue - queue_improvement)
-                    
-                    # Natural queue drift - small random improvements over time
-                    if random.random() < 0.15:  # 15% chance
-                        order.current_queue = max(0, order.current_queue - random.uniform(0.1, 1.0))
+                    # In real trading, queue advances exactly by the volume that left
+                    # No randomness here - this is deterministic based on trading activity
+                    order.current_queue = max(0, order.current_queue - volume_decrease)
                         
             elif current_vol > 0:
                 # Price level reappeared or we're tracking it for first time
@@ -793,12 +810,8 @@ class QuoteEngine:
                 volume_decrease = max(0, old_vol - current_vol)
                 
                 if volume_decrease > 0:
-                    # CRITICAL FIX: Realistic queue movement for sell orders too
-                    queue_improvement = volume_decrease * random.uniform(0.8, 1.0)  # 80-100% of volume decrease
-                    order.current_queue = max(0, order.current_queue - queue_improvement)
-                    
-                    if random.random() < 0.15:  # Natural queue drift
-                        order.current_queue = max(0, order.current_queue - random.uniform(0.1, 1.0))
+                    # Realistic queue movement for sell orders - deterministic advancement
+                    order.current_queue = max(0, order.current_queue - volume_decrease)
                         
             elif current_vol > 0:
                 order.current_queue = min(order.current_queue, current_vol * random.uniform(0.3, 0.7))
@@ -978,6 +991,7 @@ class QuoteEngine:
     def cancel_order(self, side: str, manual_cancel: bool = False, reason: str = ""):
         import time
         import random
+        import threading
         
         now = datetime.now(timezone.utc)
         self.last_cancel_time = now
@@ -992,26 +1006,44 @@ class QuoteEngine:
             print(f"⏳ Manual cancel requested - simulated {cancel_delay*1000:.0f}ms latency...")
             # Note: In real HFT systems, you'd schedule this asynchronously, not block
         
-        if side == "buy" and self.open_bid_order:
-            # Simulate realistic cancel latency
-            cancel_latency_us = self.latency_tracker.simulate_realistic_latency('order_cancel')
-            self.latency_tracker.add_order_cancel_latency(cancel_latency_us)
-            if self.exec_sim:
-                self.exec_sim.cancel_order(self.open_bid_order.order_id)
-            print(f"Cancelled BUY order @ {self.open_bid_order.price}{' (MANUAL)' if manual_cancel else ' (AUTO)'}{reason_str} [Cancel Latency: {cancel_latency_us/1000:.3f}ms]")
-            self.open_bid_order = None
-            self.status_print_events.add("order_cancelled")
-        elif side == "sell" and self.open_ask_order:
-            # Simulate realistic cancel latency
-            cancel_latency_us = self.latency_tracker.simulate_realistic_latency('order_cancel')
-            self.latency_tracker.add_order_cancel_latency(cancel_latency_us)
-            if self.exec_sim:
-                self.exec_sim.cancel_order(self.open_ask_order.order_id)
-            print(f"Cancelled SELL order @ {self.open_ask_order.price}{' (MANUAL)' if manual_cancel else ' (AUTO)'}{reason_str} [Cancel Latency: {cancel_latency_us/1000:.3f}ms]")
-            self.open_ask_order = None
-            self.status_print_events.add("order_cancelled")
-        else:
-            print(f"No {side} order to cancel")
+        # CRITICAL FIX: Synchronize order state changes to prevent race conditions
+        cancel_lock = getattr(self, '_cancel_lock', None)
+        if cancel_lock is None:
+            self._cancel_lock = threading.Lock()
+            cancel_lock = self._cancel_lock
+            
+        with cancel_lock:
+            if side == "buy" and self.open_bid_order:
+                order_to_cancel = self.open_bid_order
+                # Measure actual cancel processing latency
+                cancel_start_time = datetime.now(timezone.utc)
+                if self.exec_sim:
+                    self.exec_sim.cancel_order(order_to_cancel.order_id)
+                cancel_end_time = datetime.now(timezone.utc)
+                cancel_latency_us = (cancel_end_time - cancel_start_time).total_seconds() * 1_000_000
+                self.latency_tracker.add_order_cancel_latency(cancel_latency_us)
+                
+                # Only clear order state after ExecutionSimulator confirms cancellation
+                # The callback will handle state cleanup
+                print(f"Requested BUY cancel @ {order_to_cancel.price}{' (MANUAL)' if manual_cancel else ' (AUTO)'}{reason_str} [Cancel Latency: {cancel_latency_us/1000:.3f}ms]")
+                self.status_print_events.add("order_cancel_requested")
+                
+            elif side == "sell" and self.open_ask_order:
+                order_to_cancel = self.open_ask_order
+                # Measure actual cancel processing latency
+                cancel_start_time = datetime.now(timezone.utc)
+                if self.exec_sim:
+                    self.exec_sim.cancel_order(order_to_cancel.order_id)
+                cancel_end_time = datetime.now(timezone.utc)
+                cancel_latency_us = (cancel_end_time - cancel_start_time).total_seconds() * 1_000_000
+                self.latency_tracker.add_order_cancel_latency(cancel_latency_us)
+                
+                # Only clear order state after ExecutionSimulator confirms cancellation
+                print(f"Requested SELL cancel @ {order_to_cancel.price}{' (MANUAL)' if manual_cancel else ' (AUTO)'}{reason_str} [Cancel Latency: {cancel_latency_us/1000:.3f}ms]")
+                self.status_print_events.add("order_cancel_requested")
+                
+            else:
+                print(f"No {side} order to cancel")
 
     def cancel_all_orders(self, manual_cancel: bool = False):
         if self.open_bid_order:
@@ -1064,6 +1096,41 @@ class QuoteEngine:
         cutoff_time = now - timedelta(seconds=self.ot_ratio_window)
         self.recent_fills = [ts for ts in self.recent_fills if ts > cutoff_time]
     
+    def _track_fill_pnl(self, side: str, fill_qty: float, fill_price: float, fee: float):
+        """Track spread capture PnL and fees from fills"""
+        # CRITICAL FIX: Update total fees paid
+        self.total_fees_paid += fee
+        
+        # CRITICAL FIX: Track trades won/lost for win rate calculation
+        self.trades_total += 1
+        
+        # Calculate spread capture PnL based on mid price at entry vs fill price
+        if side == 'buy' and self.open_bid_order:
+            # For buy orders, we profit if we can sell higher than we bought
+            # Compare fill price to mid price when order was placed
+            entry_mid = self.open_bid_order.mid_price_at_entry
+            spread_capture = entry_mid - fill_price  # Negative = good (bought below mid)
+            self.spread_capture_pnl += spread_capture
+            
+            # Track win/loss: buying below mid is good
+            if fill_price <= entry_mid:
+                self.trades_won += 1
+                
+        elif side == 'sell' and self.open_ask_order:
+            # For sell orders, we profit if we sell higher than mid when we placed order
+            entry_mid = self.open_ask_order.mid_price_at_entry
+            spread_capture = fill_price - entry_mid  # Positive = good (sold above mid)
+            self.spread_capture_pnl += spread_capture
+            
+            # Track win/loss: selling above mid is good
+            if fill_price >= entry_mid:
+                self.trades_won += 1
+        
+        print(f"💰 FILL P&L: {side.upper()} {fill_qty:.1f} @ {fill_price:.4f} | "
+              f"Spread capture: {spread_capture:.4f} | Fee: ${fee:.4f} | "
+              f"Total spread PnL: {self.spread_capture_pnl:.2f} | "
+              f"Win rate: {self.get_win_rate():.1f}% ({self.trades_won}/{self.trades_total})")
+    
     def get_order_to_trade_ratio(self, window_only=True):
         """Calculate current order-to-trade ratio"""
         if window_only:
@@ -1083,10 +1150,14 @@ class QuoteEngine:
         return current_ratio > threshold and len(self.recent_fills) > 0
     
     def _update_performance_metrics(self, mid_price):
-        """Update performance tracking metrics"""
+        """Update performance tracking metrics and risk manager"""
         now = datetime.now(timezone.utc)
         current_pnl = self.mark_to_market_pnl(mid_price)
         current_equity = self.mark_to_market(mid_price)
+        current_position = self.get_position()
+        
+        # CRITICAL FIX: Update risk manager with current state regularly
+        self.risk_manager.update_position_and_pnl(current_position, current_equity)
         
         # Update PnL history for Sharpe calculation (sample every 30 seconds)
         if not self.pnl_history or (now - self.pnl_history[-1][0]).total_seconds() >= 30:
@@ -1283,71 +1354,87 @@ class QuoteEngine:
     
     def _handle_execution_event(self, event_type, event_data):
         """Handle callbacks from ExecutionSimulator to keep order state synchronized"""
-        if event_type == 'fill':
-            order_id = event_data['order_id']
-            side = event_data['side']
-            fill_qty = event_data['fill_qty']
-            remaining_qty = event_data['remaining_qty']
+        import threading
+        
+        # CRITICAL FIX: Use the same lock for all order state changes
+        cancel_lock = getattr(self, '_cancel_lock', None)
+        if cancel_lock is None:
+            self._cancel_lock = threading.Lock()
+            cancel_lock = self._cancel_lock
             
-            # Update QuoteEngine order state to match ExecutionSimulator
-            if side == 'buy' and self.open_bid_order and self.open_bid_order.order_id == order_id:
-                if remaining_qty <= 0:
-                    # Order completely filled - remove it
+        with cancel_lock:
+            if event_type == 'fill':
+                order_id = event_data['order_id']
+                side = event_data['side']
+                fill_qty = event_data['fill_qty']
+                remaining_qty = event_data['remaining_qty']
+                fill_price = event_data['price']
+                fee = event_data.get('fee', 0.0)  # Get fee from ExecutionSimulator
+                
+                # CRITICAL FIX: Track spread capture PnL and fees
+                self._track_fill_pnl(side, fill_qty, fill_price, fee)
+                
+                # Update QuoteEngine order state to match ExecutionSimulator
+                if side == 'buy' and self.open_bid_order and self.open_bid_order.order_id == order_id:
+                    if remaining_qty <= 0:
+                        # Order completely filled - remove it
+                        self.open_bid_order = None
+                        print(f"🔄 SYNC: BUY order fully filled, removed from QuoteEngine")
+                    else:
+                        # Partial fill - update remaining quantity
+                        self.open_bid_order.remaining_qty = remaining_qty
+                        self.open_bid_order.filled_qty = self.open_bid_order.qty - remaining_qty
+                        print(f"🔄 SYNC: BUY order partially filled, {remaining_qty:.1f} remaining")
+                        
+                    # Track the fill for performance metrics
+                    self._track_fill()
+                    self.status_print_events.add("order_filled")
+                    
+                    # CRITICAL FIX: Update risk manager with actual position/equity from ExecutionSimulator
+                    if self.exec_sim:
+                        current_position = self.exec_sim.position
+                        mid_price = event_data.get('price', 0)  # Use actual fill price
+                        current_equity = self.exec_sim.mark_to_market(mid_price)
+                        self.risk_manager.update_position_and_pnl(current_position, current_equity)
+                        
+                elif side == 'sell' and self.open_ask_order and self.open_ask_order.order_id == order_id:
+                    if remaining_qty <= 0:
+                        # Order completely filled - remove it
+                        self.open_ask_order = None
+                        print(f"🔄 SYNC: SELL order fully filled, removed from QuoteEngine")
+                    else:
+                        # Partial fill - update remaining quantity
+                        self.open_ask_order.remaining_qty = remaining_qty
+                        self.open_ask_order.filled_qty = self.open_ask_order.qty - remaining_qty
+                        print(f"🔄 SYNC: SELL order partially filled, {remaining_qty:.1f} remaining")
+                        
+                    # Track the fill for performance metrics
+                    self._track_fill()
+                    self.status_print_events.add("order_filled")
+                    
+                    # CRITICAL FIX: Update risk manager with actual position/equity from ExecutionSimulator
+                    if self.exec_sim:
+                        current_position = self.exec_sim.position
+                        mid_price = event_data.get('price', 0)  # Use actual fill price
+                        current_equity = self.exec_sim.mark_to_market(mid_price)
+                        self.risk_manager.update_position_and_pnl(current_position, current_equity)
+                    
+            elif event_type == 'cancel':
+                order_id = event_data['order_id']
+                side = event_data['side']
+                
+                # Remove the cancelled order from QuoteEngine state
+                if side == 'buy' and self.open_bid_order and self.open_bid_order.order_id == order_id:
+                    cancelled_order = self.open_bid_order
                     self.open_bid_order = None
-                    print(f"🔄 SYNC: BUY order fully filled, removed from QuoteEngine")
-                else:
-                    # Partial fill - update remaining quantity
-                    self.open_bid_order.remaining_qty = remaining_qty
-                    self.open_bid_order.filled_qty = self.open_bid_order.qty - remaining_qty
-                    print(f"🔄 SYNC: BUY order partially filled, {remaining_qty:.1f} remaining")
+                    print(f"🔄 SYNC: BUY order cancelled @ {cancelled_order.price}, removed from QuoteEngine")
+                    self.status_print_events.add("order_cancelled")
                     
-                # Track the fill for performance metrics
-                self._track_fill()
-                self.status_print_events.add("order_filled")
-                
-                # CRITICAL FIX: Update risk manager with actual position/equity from ExecutionSimulator
-                if self.exec_sim:
-                    current_position = self.exec_sim.position
-                    mid_price = (event_data.get('price', 0) + event_data.get('price', 0)) / 2  # Rough estimate
-                    current_equity = self.exec_sim.mark_to_market(mid_price)
-                    self.risk_manager.update_position_and_pnl(current_position, current_equity)
-                    
-            elif side == 'sell' and self.open_ask_order and self.open_ask_order.order_id == order_id:
-                if remaining_qty <= 0:
-                    # Order completely filled - remove it
+                elif side == 'sell' and self.open_ask_order and self.open_ask_order.order_id == order_id:
+                    cancelled_order = self.open_ask_order
                     self.open_ask_order = None
-                    print(f"🔄 SYNC: SELL order fully filled, removed from QuoteEngine")
-                else:
-                    # Partial fill - update remaining quantity
-                    self.open_ask_order.remaining_qty = remaining_qty
-                    self.open_ask_order.filled_qty = self.open_ask_order.qty - remaining_qty
-                    print(f"🔄 SYNC: SELL order partially filled, {remaining_qty:.1f} remaining")
-                    
-                # Track the fill for performance metrics
-                self._track_fill()
-                self.status_print_events.add("order_filled")
-                
-                # CRITICAL FIX: Update risk manager with actual position/equity from ExecutionSimulator
-                if self.exec_sim:
-                    current_position = self.exec_sim.position
-                    mid_price = (event_data.get('price', 0) + event_data.get('price', 0)) / 2  # Rough estimate
-                    current_equity = self.exec_sim.mark_to_market(mid_price)
-                    self.risk_manager.update_position_and_pnl(current_position, current_equity)
-                
-        elif event_type == 'cancel':
-            order_id = event_data['order_id']
-            side = event_data['side']
-            
-            # Remove the cancelled order from QuoteEngine state
-            if side == 'buy' and self.open_bid_order and self.open_bid_order.order_id == order_id:
-                self.open_bid_order = None
-                print(f"🔄 SYNC: BUY order cancelled, removed from QuoteEngine")
-                self.status_print_events.add("order_cancelled")
-                
-            elif side == 'sell' and self.open_ask_order and self.open_ask_order.order_id == order_id:
-                self.open_ask_order = None
-                print(f"🔄 SYNC: SELL order cancelled, removed from QuoteEngine")
-                self.status_print_events.add("order_cancelled")
+                    print(f"🔄 SYNC: SELL order cancelled @ {cancelled_order.price}, removed from QuoteEngine")
+                    self.status_print_events.add("order_cancelled")
 
     def _validate_order_state_sync(self):
         """Validate that QuoteEngine and ExecutionSimulator order states are synchronized"""

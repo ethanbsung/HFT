@@ -29,7 +29,7 @@ class RiskManager:
         self.limits = limits
         self.session_start = datetime.now(timezone.utc)
         self.daily_pnl = 0.0
-        self.peak_equity = 100000.0  # Starting equity
+        self.peak_equity = 1000.0  # Start with initial capital, not 100k
         self.max_drawdown_observed = 0.0
         
         # Order rate limiting
@@ -61,10 +61,18 @@ class RiskManager:
         # Update daily PnL (simplified - should track more precisely)
         current_pnl = current_equity - self.peak_equity
         
+        # Be more lenient during initial startup - allow small negative PnL fluctuations
+        session_duration_minutes = (now - self.session_start).total_seconds() / 60
+        if session_duration_minutes < 5.0:  # First 5 minutes are grace period
+            # During startup, only trigger if loss is significant (> 1% of capital)
+            daily_pnl_ok = current_pnl >= -(self.peak_equity * 0.01)
+        else:
+            daily_pnl_ok = current_pnl >= -self.limits.max_daily_loss
+        
         # Risk checks
         checks = {
             'position_limit': abs(new_position) <= self.limits.max_position,
-            'daily_pnl_limit': current_pnl >= -self.limits.max_daily_loss,
+            'daily_pnl_limit': daily_pnl_ok,
             'drawdown_limit': self._check_drawdown_limit(current_equity),
             'concentration_risk': self._check_concentration_risk(size, price),
             'var_limit': self._check_var_limit(new_position, price),
@@ -122,15 +130,45 @@ class RiskManager:
         """Check if drawdown is within limits"""
         if self.peak_equity <= 0:
             return True
+            
+        # Be more lenient during startup - small fluctuations in equity are normal
+        session_duration_minutes = (datetime.now(timezone.utc) - self.session_start).total_seconds() / 60
+        
         current_drawdown = (self.peak_equity - current_equity) / self.peak_equity
-        return current_drawdown <= self.limits.max_drawdown
+        
+        if session_duration_minutes < 5.0:  # First 5 minutes grace period
+            # Allow up to 2% drawdown during startup (market data quirks, etc.)
+            return current_drawdown <= 0.02
+        else:
+            return current_drawdown <= self.limits.max_drawdown
     
     def _check_concentration_risk(self, size: float, price: float) -> bool:
         """Check if order size is reasonable relative to typical market volume"""
-        # Simplified - in practice, would use real-time volume data
-        typical_minute_volume = 10.0  # BTC
+        # Symbol-aware volume estimation based on market cap and price range
         order_value = size * price
-        max_order_value = typical_minute_volume * self.limits.position_concentration * price
+        
+        # Estimate typical minute volume based on price range (proxy for market size)
+        if price >= 50000:  # BTC range
+            typical_minute_volume_tokens = 10.0
+        elif price >= 1000:  # ETH range  
+            typical_minute_volume_tokens = 50.0
+        elif price >= 100:  # Mid-cap coins
+            typical_minute_volume_tokens = 100.0
+        elif price >= 10:   # Small-cap coins
+            typical_minute_volume_tokens = 500.0
+        elif price >= 1:    # Micro-cap coins  
+            typical_minute_volume_tokens = 1000.0
+        else:               # Very low-price tokens (like DEXT at $0.33)
+            typical_minute_volume_tokens = 2000.0
+        
+        # Calculate max order value as percentage of typical volume
+        max_order_value = typical_minute_volume_tokens * self.limits.position_concentration * price
+        
+        # Additional safeguard: for very small orders, always allow
+        min_reasonable_order_value = 0.50  # $0.50 minimum
+        if order_value <= min_reasonable_order_value:
+            return True
+            
         return order_value <= max_order_value
     
     def _check_var_limit(self, position: float, current_price: float) -> bool:
