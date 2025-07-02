@@ -21,10 +21,12 @@ class Orderbookstream:
         self.orderbook_features = []
         self.batch_size = 1000
         self.file_counter = 0
-        self.quote_engine = QuoteEngine(max_position_size=6000.0, exec_sim=exec_sim)  # ~$2000 worth at $0.33
-        # Local paper‐trading execution simulator
-        self.exec_sim = exec_sim if exec_sim else ExecutionSimulator()
-        self.desired_order_size = 300.0  # ~$100 worth at $0.33
+        self.quote_engine = QuoteEngine(max_position_size=100.0, exec_sim=exec_sim)
+        # Local paper‐trading execution simulator - ensure we use the same instance passed in
+        self.exec_sim = exec_sim  # Don't create a new one if None - let main.py handle this
+        if not self.exec_sim:
+            raise ValueError("exec_sim parameter is required - pass the ExecutionSimulator instance from main.py")
+        self.desired_order_size = 10.0  # 10 DEXT per quote
         self.target_inventory = 0.0
         self.inventory_tick_skew_per_unit = 5
         self.max_inventory_skew_ticks = 3
@@ -39,7 +41,7 @@ class Orderbookstream:
         os.makedirs("data/features", exist_ok=True)
 
     async def stream_data(self):
-        """Stream data using official Coinbase Advanced SDK WebSocket client."""
+        """Stream data using official Coinbase Advanced SDK WebSocket client with reconnection."""
         
         if not self.api_key or not self.api_secret:
             print("❌ ERROR: API key and secret required for Advanced Trade WebSocket")
@@ -72,42 +74,64 @@ class Orderbookstream:
         
         def on_close():
             print(f"❌ WebSocket connection closed for {self._symbol}")
-            
-        # Create the official Coinbase WebSocket client
-        self.ws_client = WSClient(
-            api_key=self.api_key,
-            api_secret=self.api_secret,
-            on_message=on_message,
-            on_open=on_open,
-            on_close=on_close,
-            verbose=True  # Enable debug logging
-        )
         
-        try:
-            # Open connection
-            self.ws_client.open()
-            
-            # Subscribe to level2 channel for orderbook data
-            self.ws_client.level2(product_ids=[self._symbol])
-            print(f"📊 Subscribed to level2 orderbook data for {self._symbol}")
-            
-            # Keep connection alive and process messages
-            self.running = True
-            while self.running:
-                try:
-                    # Sleep and check for exceptions
-                    self.ws_client.sleep_with_exception_check(sleep=1)
-                except Exception as e:
-                    print(f"❌ WebSocket error: {e}")
-                    print(f"🔄 Attempting to reconnect...")
-                    await asyncio.sleep(5)
+        self.running = True
+        reconnect_attempts = 0
+        max_reconnect_attempts = 10
+        
+        while self.running and reconnect_attempts < max_reconnect_attempts:
+            try:
+                print(f"🔄 Connection attempt {reconnect_attempts + 1}/{max_reconnect_attempts}")
+                
+                # Create the official Coinbase WebSocket client
+                self.ws_client = WSClient(
+                    api_key=self.api_key,
+                    api_secret=self.api_secret,
+                    on_message=on_message,
+                    on_open=on_open,
+                    on_close=on_close,
+                    verbose=True  # Enable debug logging
+                )
+                
+                # Open connection
+                self.ws_client.open()
+                
+                # Subscribe to level2 channel for orderbook data
+                self.ws_client.level2(product_ids=[self._symbol])
+                print(f"📊 Subscribed to level2 orderbook data for {self._symbol}")
+                
+                # Reset reconnect counter on successful connection
+                reconnect_attempts = 0
+                
+                # Keep connection alive and process messages
+                while self.running:
+                    try:
+                        # Sleep and check for exceptions
+                        self.ws_client.sleep_with_exception_check(sleep=1)
+                    except Exception as e:
+                        print(f"❌ WebSocket error: {e}")
+                        print(f"🔄 Will attempt to reconnect in 5 seconds...")
+                        break  # Break inner loop to trigger reconnection
+                        
+            except Exception as e:
+                print(f"❌ Failed to start WebSocket: {e}")
+                reconnect_attempts += 1
+                if reconnect_attempts < max_reconnect_attempts:
+                    wait_time = min(5 * reconnect_attempts, 30)  # Exponential backoff, max 30s
+                    print(f"🔄 Reconnection attempt {reconnect_attempts}/{max_reconnect_attempts} in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    print(f"❌ Max reconnection attempts ({max_reconnect_attempts}) reached. Giving up.")
                     break
-                    
-        except Exception as e:
-            print(f"❌ Failed to start WebSocket: {e}")
-        finally:
-            if self.ws_client:
-                self.ws_client.close()
+            finally:
+                if self.ws_client:
+                    try:
+                        self.ws_client.close()
+                    except:
+                        pass
+                # Wait before reconnect attempt
+                if self.running and reconnect_attempts < max_reconnect_attempts:
+                    await asyncio.sleep(5)
     
     def _handle_websocket_message(self, message):
         """Handle incoming WebSocket messages from the official SDK"""
@@ -174,12 +198,21 @@ class Orderbookstream:
             if asks_raw:
                 print(f"📉 Best Ask: {asks_raw[0][0]}")
             
-            # Process the orderbook in a separate thread to avoid blocking WebSocket
-            threading.Thread(
-                target=self._process_orderbook_sync,
-                args=(orderbook,),
-                daemon=True
-            ).start()
+            # CRITICAL FIX: Use thread-safe queue instead of dangerous event loop creation
+            # Schedule processing on the main event loop instead of creating new ones
+            try:
+                # Get the main event loop running in the main thread
+                main_loop = asyncio.get_running_loop()
+                # Schedule the coroutine to run on the main loop thread-safely
+                asyncio.run_coroutine_threadsafe(
+                    self._process_orderbook_update(orderbook), 
+                    main_loop
+                )
+            except RuntimeError:
+                # Fallback: If no running loop, process synchronously (safer than new loop)
+                print("⚠️ No running event loop found, processing orderbook synchronously")
+                # Call synchronous methods instead of async ones
+                self._process_orderbook_sync_safe(orderbook)
     
     def _handle_orderbook_update(self, update):
         """Process incremental orderbook updates"""
@@ -193,17 +226,33 @@ class Orderbookstream:
         # In production, you'd maintain a proper orderbook and apply incremental updates
         pass
     
-    def _process_orderbook_sync(self, orderbook):
-        """Synchronous wrapper for orderbook processing"""
+    def _process_orderbook_sync_safe(self, orderbook):
+        """Safe synchronous processing when async context is unavailable"""
         try:
-            # Run the async processing in a new event loop since we're in a thread
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._process_orderbook_update(orderbook))
-            loop.close()
+            # Process orderbook synchronously without async calls
+            bids_raw = orderbook['bids']
+            asks_raw = orderbook['asks']
+            timestamp = orderbook['timestamp']
+            
+            # Update quote engine with orderbook
+            self.quote_engine.update_order_with_orderbook(orderbook)
+            
+            # Update execution simulator
+            base_best_bid_price = float(bids_raw[0][0])
+            base_best_ask_price = float(asks_raw[0][0])
+            self.exec_sim.on_orderbook_update(base_best_bid_price, base_best_ask_price, timestamp)
+            self.exec_sim.update_orderbook(orderbook)
+            
+            print(f"📊 Processed orderbook snapshot synchronously - Spread: {base_best_ask_price - base_best_bid_price:.4f}")
+            
         except Exception as e:
-            print(f"❌ Error in orderbook processing: {e}")
+            print(f"❌ Error in sync orderbook processing: {e}")
+    
+    def _process_orderbook_sync(self, orderbook):
+        """DEPRECATED: Dangerous synchronous wrapper - use thread-safe scheduling instead"""
+        print("⚠️ WARNING: Using deprecated sync wrapper - this can cause deadlocks")
+        # Keep for backward compatibility but don't use the dangerous event loop creation
+        self._process_orderbook_sync_safe(orderbook)
     
     def stop(self):
         """Stop the WebSocket stream"""
@@ -228,12 +277,9 @@ class Orderbookstream:
         base_best_bid_price = float(bids_raw[0][0])
         base_best_ask_price = float(asks_raw[0][0])
         spread = base_best_ask_price - base_best_bid_price
-        # Update simulator with latest top‑of‑book
-        self.exec_sim.on_orderbook_update(
-            base_best_bid_price,
-            base_best_ask_price,
-            timestamp
-        )
+        # Update simulator with latest top‑of‑book and orderbook data
+        self.exec_sim.on_orderbook_update(base_best_bid_price, base_best_ask_price, timestamp)
+        self.exec_sim.update_orderbook(orderbook)
 
         if spread <= tick_size / 2:
             print(f"Warning: Invalid or tight spread ({spread:.8f}). Best Bid: {base_best_bid_price} | Best Ask: {base_best_ask_price}")
@@ -299,13 +345,13 @@ class Orderbookstream:
             )
             
             # Asymmetric thresholds based on position
-            # Adjusted condition for larger desired_order_size
-            if current_position > self.desired_order_size / 2:  # When long, be more lenient on asks
+            # Adjusted condition for order size
+            if current_position > self.quote_engine.DEFAULT_ORDER_SIZE / 2:  # When long, be more lenient on asks
                 extreme_bid_threshold = 0.65   # Less sensitive (was 0.45)
                 extreme_ask_threshold = 0.85  # Less sensitive (was 0.80)
                 moderate_bid_threshold = 0.35 # Less sensitive (was 0.20)
                 moderate_ask_threshold = 0.55 # Less sensitive (was 0.45)
-            elif current_position < -self.desired_order_size / 2:  # When short, be more lenient on bids
+            elif current_position < -self.quote_engine.DEFAULT_ORDER_SIZE / 2:  # When short, be more lenient on bids
                 extreme_bid_threshold = 0.85  # Less sensitive (was 0.80)
                 extreme_ask_threshold = 0.65   # Less sensitive (was 0.45)
                 moderate_bid_threshold = 0.55 # Less sensitive (was 0.45)
@@ -325,13 +371,13 @@ class Orderbookstream:
             elif obi < -moderate_bid_threshold:  # Moderate selling pressure  
                 # Don't cancel, but widen bid spread
                 target_bid_price = round_to_tick(base_best_bid_price - (skew_ticks * tick_size) - tick_size, tick_size)
-                if self.quote_engine.place_order("buy", target_bid_price, self.desired_order_size, orderbook):
+                if self.quote_engine.place_order("buy", target_bid_price, self.quote_engine.DEFAULT_ORDER_SIZE, orderbook):
                     current_signal_state = "BID_WIDE (MODERATE_OBI)"
                 else:
                     current_signal_state = "HOLD_NO_BID (PRICE)"
             else:
                 # Normal bid placement
-                if self.quote_engine.place_order("buy", target_bid_price, self.desired_order_size, orderbook):
+                if self.quote_engine.place_order("buy", target_bid_price, self.quote_engine.DEFAULT_ORDER_SIZE, orderbook):
                     pass  # Order placed or maintained successfully
                 else:
                     current_signal_state = "HOLD_NO_BID (PRICE)"
@@ -348,7 +394,7 @@ class Orderbookstream:
             elif obi > moderate_ask_threshold:  # Moderate buying pressure
                 # Don't cancel, but widen ask spread  
                 target_ask_price = round_to_tick(base_best_ask_price - (skew_ticks * tick_size) + tick_size, tick_size)
-                if self.quote_engine.place_order("sell", target_ask_price, self.desired_order_size, orderbook):
+                if self.quote_engine.place_order("sell", target_ask_price, self.quote_engine.DEFAULT_ORDER_SIZE, orderbook):
                     if current_signal_state == "BID_WIDE (MODERATE_OBI)":
                         current_signal_state = "BOTH_WIDE (MODERATE_OBI)"
                     else:
@@ -360,7 +406,7 @@ class Orderbookstream:
                         current_signal_state = "HOLD_NO_ASK (PRICE)"
             else:
                 # Normal ask placement
-                if self.quote_engine.place_order("sell", target_ask_price, self.desired_order_size, orderbook):
+                if self.quote_engine.place_order("sell", target_ask_price, self.quote_engine.DEFAULT_ORDER_SIZE, orderbook):
                     pass  # Order placed or maintained successfully
                 else:
                     if current_signal_state == "HOLD_NO_BID (PRICE)":

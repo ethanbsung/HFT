@@ -297,16 +297,17 @@ class Order:
         self.placement_complete_time = None  # When order placement completed
 
 class QuoteEngine:
-    TICK = 0.0001  # DEXT-USD quote increment from trading pair info
+    TICK = 0.0001  # DEXT-USD quote increment
     BASE_MAX_TICKS_AWAY = 15
     ADAPTIVE_MAX_TICKS_MULTIPLIER = 2.0
     ORDER_TTL_SEC = 120.0
     MIN_ORDER_REPLACE_INTERVAL = 0.5
-    MAKER_FEE_RATE = 0.0000
+    MAKER_FEE_RATE = 0.004  # 0.4% starting maker fee (updates dynamically)
+    DEFAULT_ORDER_SIZE = 10.0   # 10 DEXT per quote
 
-    def __init__(self, max_position_size=0.05, exec_sim: ExecutionSimulator | None = None):
+    def __init__(self, max_position_size=100.0, exec_sim: ExecutionSimulator | None = None):
         self.position = 0
-        self.cash = 100_000.0
+        self.cash = 1_000.0
         # Execution simulator for paper‑trading hooks
         self.exec_sim = exec_sim
         self.initial_cash = self.cash
@@ -357,6 +358,10 @@ class QuoteEngine:
         )
         self.risk_manager = RiskManager(risk_limits)
         self.inventory_manager = InventoryManager(target_inventory=0.0, max_inventory=max_position_size)
+        
+        # Set up ExecutionSimulator callback if provided
+        if self.exec_sim and hasattr(self.exec_sim, 'quote_engine_callback'):
+            self.exec_sim.quote_engine_callback = self._handle_execution_event
 
     def _start_market_data_processing(self):
         """Mark the start of market data processing"""
@@ -467,6 +472,20 @@ class QuoteEngine:
         # Record this attempt for order rate limiting
         self.risk_manager.record_order_attempt()
 
+        # CRITICAL FIX: Use actual DEXT-USD market specifications for validation
+        # Based on actual market data: base_increment=0.1, min_market_funds=1
+        min_order_value_usd = 1.0  # $1 minimum order value (from min_market_funds)
+        min_order_size_dext = 0.1  # 0.1 DEXT minimum (from base_increment)
+        order_value_usd = size * price
+        
+        if order_value_usd < min_order_value_usd:
+            print(f"❌ Rejected {side} order: ${order_value_usd:.2f} below minimum ${min_order_value_usd:.2f}")
+            return False
+            
+        if size < min_order_size_dext:
+            print(f"❌ Rejected {side} order: {size:.4f} DEXT below minimum {min_order_size_dext} DEXT")
+            return False
+
         # Pre-trade risk check
         current_equity = self.mark_to_market(mid_price_at_entry)
         latency_ms = 0.0
@@ -488,7 +507,8 @@ class QuoteEngine:
             return False
 
         if side == "buy":
-            if self.position + size > self.max_position_size:
+            current_position = self.get_position()  # Get from ExecutionSimulator
+            if current_position + size > self.max_position_size:
                 return False
                 
             # Try to amend existing order first
@@ -505,7 +525,8 @@ class QuoteEngine:
             self.last_bid_replace_time = datetime.now(timezone.utc)
             
         elif side == "sell":
-            if self.position - size < -self.max_position_size:
+            current_position = self.get_position()  # Get from ExecutionSimulator
+            if current_position - size < -self.max_position_size:
                 return False
                 
             # Try to amend existing order first
@@ -528,9 +549,24 @@ class QuoteEngine:
         if queue_ahead is None:
             return False
             
-        # Reject orders with excessive queue ahead (whale orders)
-        if queue_ahead > 5.0:  # More than 5 BTC ahead
-            print(f"Rejected {side} order @ {price}: excessive queue ahead ({queue_ahead:.2f} BTC)")
+        # CRITICAL FIX: Validate spread to prevent crossed markets (impossible in real trading)
+        bids = current_orderbook['bids']
+        asks = current_orderbook['asks']
+        if bids and asks:
+            current_best_bid = float(bids[0][0])
+            current_best_ask = float(asks[0][0])
+            
+            # Prevent placing orders that would cross the spread
+            if side == "buy" and price >= current_best_ask:
+                print(f"❌ Rejected BUY order @ {price}: would cross spread (best ask: {current_best_ask})")
+                return False
+            elif side == "sell" and price <= current_best_bid:
+                print(f"❌ Rejected SELL order @ {price}: would cross spread (best bid: {current_best_bid})")
+                return False
+            
+        # Reject orders with excessive queue ahead (whale orders)  
+        if queue_ahead > 1000.0:  # More than 1k DEXT ahead
+            print(f"Rejected {side} order @ {price}: excessive queue ahead ({queue_ahead:.0f} DEXT)")
             return False
         
         new_order = Order(side, price, size, queue_ahead, mid_price_at_entry)
@@ -590,7 +626,7 @@ class QuoteEngine:
                     # More realistic queue position - assume we're behind 15-25% of volume (not 85%)
                     queue_multiplier = random.uniform(0.15, 0.25)
                     queue_vol = float(bid_vol) * queue_multiplier
-                    return max(0.002, queue_vol)  # Much smaller minimum queue
+                    return max(0.5, queue_vol)  # Min 0.5 DEXT queue
             
             # Price not found in current orderbook - estimate based on market behavior
             best_bid = float(bids[0][0])
@@ -601,11 +637,11 @@ class QuoteEngine:
                     # Much more aggressive for best bid - we get decent queue position
                     best_bid_vol = float(bids[0][1])
                     queue_multiplier = random.uniform(0.10, 0.20)  # 10-20% instead of 40%
-                    return max(0.005, best_bid_vol * queue_multiplier)
+                    return max(1.0, best_bid_vol * queue_multiplier)  # Min 1 DEXT queue
                 elif ticks_away == 1:  # One tick behind best
-                    return random.uniform(0.002, 0.008)  # Small random queue
+                    return random.uniform(0.5, 2.0)  # Small random queue in DEXT
                 else:  # Further away
-                    return random.uniform(0.001, 0.003)  # Very small queue for distant levels
+                    return random.uniform(0.1, 1.0)  # Very small queue for distant levels
             return None
         
         elif side == "sell":
@@ -615,7 +651,7 @@ class QuoteEngine:
                     # More realistic queue position
                     queue_multiplier = random.uniform(0.15, 0.25)
                     queue_vol = float(ask_vol) * queue_multiplier
-                    return max(0.002, queue_vol)
+                    return max(0.5, queue_vol)  # Min 0.5 DEXT queue
             
             # Price not found in current orderbook
             best_ask = float(asks[0][0])
@@ -625,11 +661,11 @@ class QuoteEngine:
                 if ticks_away == 0:  # Joining at best ask
                     best_ask_vol = float(asks[0][1])
                     queue_multiplier = random.uniform(0.10, 0.20)
-                    return max(0.005, best_ask_vol * queue_multiplier)
+                    return max(1.0, best_ask_vol * queue_multiplier)  # Min 1 DEXT queue
                 elif ticks_away == 1:  # One tick above best
-                    return random.uniform(0.002, 0.008)
+                    return random.uniform(0.5, 2.0)  # Small random queue in DEXT
                 else:  # Further away
-                    return random.uniform(0.001, 0.003)
+                    return random.uniform(0.1, 1.0)  # Very small queue for distant levels
             return None
         
         return None
@@ -722,15 +758,16 @@ class QuoteEngine:
                 # Volume decreased = people ahead of us got filled
                 volume_decrease = max(0, old_vol - current_vol)
                 
-                # Enhanced queue movement - sometimes we move up more than volume decrease
+                # CRITICAL FIX: Realistic queue movement - can't advance more than volume that left
                 if volume_decrease > 0:
-                    # Add some randomness to queue improvement
-                    queue_improvement = volume_decrease * random.uniform(1.0, 1.5)
+                    # In real trading, you advance at most by the volume that disappeared
+                    # Add small randomness for market uncertainty but stay realistic
+                    queue_improvement = volume_decrease * random.uniform(0.8, 1.0)  # 80-100% of volume decrease
                     order.current_queue = max(0, order.current_queue - queue_improvement)
                     
                     # Natural queue drift - small random improvements over time
                     if random.random() < 0.15:  # 15% chance
-                        order.current_queue = max(0, order.current_queue - random.uniform(0.001, 0.005))
+                        order.current_queue = max(0, order.current_queue - random.uniform(0.1, 1.0))
                         
             elif current_vol > 0:
                 # Price level reappeared or we're tracking it for first time
@@ -756,11 +793,12 @@ class QuoteEngine:
                 volume_decrease = max(0, old_vol - current_vol)
                 
                 if volume_decrease > 0:
-                    queue_improvement = volume_decrease * random.uniform(1.0, 1.5)
+                    # CRITICAL FIX: Realistic queue movement for sell orders too
+                    queue_improvement = volume_decrease * random.uniform(0.8, 1.0)  # 80-100% of volume decrease
                     order.current_queue = max(0, order.current_queue - queue_improvement)
                     
                     if random.random() < 0.15:  # Natural queue drift
-                        order.current_queue = max(0, order.current_queue - random.uniform(0.001, 0.005))
+                        order.current_queue = max(0, order.current_queue - random.uniform(0.1, 1.0))
                         
             elif current_vol > 0:
                 order.current_queue = min(order.current_queue, current_vol * random.uniform(0.3, 0.7))
@@ -779,147 +817,21 @@ class QuoteEngine:
             tick = self.TICK
         return abs(a - b) < (tick / 2)
     
-    def _simulate_fill_single_order(self, order: Order, trade_price, trade_qty, trade_side):
-        import random
-        
-        if not order:
-            return False
-        
-        if not self._same_price_level(trade_price, order.price):
-            return False
-        
-        if order.side == "buy" and trade_side != "sell":
-            return False
-        if order.side == "sell" and trade_side != "buy":
-            return False
-        
-        print(f"Trade hits our {order.side.upper()} order level: {trade_side} {trade_qty} @ {trade_price}")
-        print(f"Queue ahead for {order.side.upper()} order: {order.current_queue:.6f}")
-
-        # More aggressive queue reduction for small orders near front
-        if order.current_queue < 0.05:  # Very close to front of queue
-            # Accelerated queue movement when we're near the front
-            queue_reduction = trade_qty * random.uniform(1.2, 2.0)  # 20-100% bonus reduction
-        else:
-            queue_reduction = trade_qty
-
-        order.current_queue -= queue_reduction
-
-        cq_before_trade_impact = order.current_queue + queue_reduction
-        if cq_before_trade_impact <= 0: 
-            cq_before_trade_impact = 0
-
-        # Enhanced fill logic with probabilistic fills
-        our_fill = 0
-        
-        if order.current_queue <= 0:
-            # Standard fill logic when queue is cleared
-            qty_past_our_turn = queue_reduction - cq_before_trade_impact
-            if qty_past_our_turn < 0: 
-                qty_past_our_turn = 0
-            our_fill = min(order.remaining_qty, qty_past_our_turn)
-        else:
-            # Probabilistic fill for orders very close to front of queue
-            if order.current_queue < 0.01:  # Within 0.01 BTC of front
-                fill_probability = min(0.85, (trade_qty / 0.02) * (0.01 / max(0.001, order.current_queue)))
-                if random.random() < fill_probability:
-                    # Partial fill based on trade size and proximity to front
-                    max_fill = min(order.remaining_qty, trade_qty * random.uniform(0.3, 0.8))
-                    our_fill = max_fill
-                    order.current_queue = 0  # Move to front after partial fill
-            elif order.current_queue < 0.05:  # Close to front
-                fill_probability = min(0.35, trade_qty / 0.05)
-                if random.random() < fill_probability:
-                    our_fill = min(order.remaining_qty, trade_qty * random.uniform(0.1, 0.4))
-                    order.current_queue = max(0, order.current_queue - our_fill)
-
-        if our_fill > 0.0000001:
-                fill_time = datetime.now(timezone.utc)
-                
-                # Note: We don't track "order-to-fill latency" as it's not a realistic HFT metric
-                # In real systems, fills depend on market conditions, not system latency
-                # What matters is: order placement, market data processing, and decision latencies
-                
-                order.filled_qty += our_fill
-                order.remaining_qty -= our_fill
-
-                if order.side == "buy":
-                    self.position += our_fill
-                    self.cash -= order.price * our_fill
-                    # Calculate spread capture PnL
-                    trade_value = order.price * our_fill
-                    fee_for_fill = trade_value * self.MAKER_FEE_RATE
-                    self.cash -= fee_for_fill
-                    self.total_fees_paid += fee_for_fill
-
-                    # For a buy order, we capture spread if our fill price is less than the mid-price at entry
-                    gross_spread_profit = (order.mid_price_at_entry - order.price) * our_fill
-                    net_spread_profit = gross_spread_profit - fee_for_fill
-                    self.spread_capture_pnl += net_spread_profit
-                    
-                    # Track win/loss
-                    self.trades_total += 1
-                    if net_spread_profit > 0:
-                        self.trades_won += 1
-                else: # sell order
-                    self.position -= our_fill
-                    self.cash += order.price * our_fill
-                    # Calculate spread capture PnL
-                    trade_value = order.price * our_fill
-                    fee_for_fill = trade_value * self.MAKER_FEE_RATE
-                    self.cash -= fee_for_fill # For sell orders, fee is also a deduction from cash proceeds.
-                    self.total_fees_paid += fee_for_fill
-
-                    # For a sell order, we capture spread if our fill price is greater than the mid-price at entry
-                    gross_spread_profit = (order.price - order.mid_price_at_entry) * our_fill
-                    net_spread_profit = gross_spread_profit - fee_for_fill
-                    self.spread_capture_pnl += net_spread_profit
-                    
-                    # Track win/loss
-                    self.trades_total += 1
-                    if net_spread_profit > 0:
-                        self.trades_won += 1
-                
-                # Update risk manager with new position and PnL
-                current_equity = self.mark_to_market(order.price)  # Use fill price as estimate
-                self.risk_manager.update_position_and_pnl(self.position, current_equity)
-                
-                # Check for any post-trade risk breaches
-                if self.risk_manager.emergency_risk_shutdown():
-                    print("🚨 EMERGENCY STOP triggered by risk manager!")
-                    self.cancel_all_orders(manual_cancel=True)
-                    self.status_print_events.add("emergency_stop")
-                
-                # Fill message without unrealistic latency
-                print(f"✅ {order.side.upper()} FILLED: {our_fill:.6f} @ {order.price}")
-                print(f"   New Position: {self.position:.6f} | Cash: {self.cash:.2f} | Net Spread PnL: {self.spread_capture_pnl:.2f} | Fees this fill: {fee_for_fill:.4f}")
-                self.status_print_events.add("order_filled")
-                self._track_fill()
-
-                if order.remaining_qty < 0.0000001:
-                    print(f"{order.side.upper()} Order completely filled!")
-                    if order.side == "buy":
-                        self.open_bid_order = None
-                    else:
-                        self.open_ask_order = None
-                    return True
-        else:
-            print(f"Queue for {order.side.upper()} order reduced by {trade_qty:.6f}, remaining ahead: {order.current_queue:.6f}")
-        return False
-
     def simulate_fill(self, trade_price, trade_qty, trade_side):
-        filled_bid = False
-        filled_ask = False
+        """
+        DEPRECATED: Fill simulation now handled by ExecutionSimulator
+        This method is kept for backward compatibility but does nothing
+        """
+        # Fill simulation now handled by ExecutionSimulator to avoid double fills
+        pass
 
-        if self.open_bid_order:
-            filled_bid = self._simulate_fill_single_order(self.open_bid_order, trade_price, trade_qty, trade_side)
-            if filled_bid and not self.open_bid_order:
-                pass
-        
-        if self.open_ask_order:
-            filled_ask = self._simulate_fill_single_order(self.open_ask_order, trade_price, trade_qty, trade_side)
-            if filled_ask and not self.open_ask_order:
-                pass
+    def _simulate_fill_single_order(self, order: Order, trade_price, trade_qty, trade_side):
+        """
+        DEPRECATED: Fill simulation now handled by ExecutionSimulator
+        This method is kept for backward compatibility but does nothing
+        """
+        # Fill simulation now handled by ExecutionSimulator to avoid double fills
+        return False
 
     def should_print_status(self, force_interval_seconds=10):
         """Check if we should print status based on trading events or time interval"""
@@ -1011,17 +923,41 @@ class QuoteEngine:
             dd_pct = self.max_drawdown_observed * 100
             perf_str = f" | Sharpe:{sharpe:.2f} WR:{win_rate:.1f}% DD:{dd_pct:.1f}%"
         
-        print(f"Pos: {self.position:.4f} | Cash: {self.cash:.2f} | MTM PnL: {pnl:.2f} | Net Spread PnL: {self.spread_capture_pnl:.2f} | Unrealized: {unrealized_pnl:.2f} | Total Fees: {self.total_fees_paid:.2f}{ot_str}{risk_str}{latency_str}{perf_str} | {orders_info}{events_str}")
+        current_position = self.get_position()
+        current_cash = self.get_cash()
+        print(f"Pos: {current_position:.4f} | Cash: {current_cash:.2f} | MTM PnL: {pnl:.2f} | Net Spread PnL: {self.spread_capture_pnl:.2f} | Unrealized: {unrealized_pnl:.2f} | Total Fees: {self.total_fees_paid:.2f}{ot_str}{risk_str}{latency_str}{perf_str} | {orders_info}{events_str}")
+        
+        # CRITICAL FIX: Validate order state synchronization periodically
+        if len(self.pnl_history) % 20 == 0:  # Check every 20th status print
+            self._validate_order_state_sync()
         
         # Clear events and update timestamp
         self.status_print_events.clear()
         self.last_status_print_time = now
 
+    def get_position(self):
+        # Get position from execution simulator for consistency
+        if self.exec_sim:
+            return self.exec_sim.position
+        return self.position
+
+    def get_cash(self):
+        # Get cash from execution simulator for consistency
+        if self.exec_sim:
+            return self.exec_sim.cash
+        return self.cash
+    
     def mark_to_market(self, mid_price):
+        # Use execution simulator state for consistency
+        if self.exec_sim:
+            return self.exec_sim.mark_to_market(mid_price)
         return self.position * mid_price + self.cash
     
     def mark_to_market_pnl(self, mid_price):
         """Return only the profit/loss component (excluding initial capital)."""
+        # Use execution simulator state for consistency
+        if self.exec_sim:
+            return self.exec_sim.mark_to_market(mid_price) - self.initial_cash
         return self.position * mid_price + self.cash - self.initial_cash
 
     def get_unrealized_open_order_pnl(self, current_mid_price: float) -> float:
@@ -1040,12 +976,21 @@ class QuoteEngine:
         return unrealized_pnl
 
     def cancel_order(self, side: str, manual_cancel: bool = False, reason: str = ""):
+        import time
+        import random
+        
         now = datetime.now(timezone.utc)
         self.last_cancel_time = now
         if manual_cancel:
             self.last_manual_cancel_time = now
 
         reason_str = f" ({reason})" if reason else ""
+        
+        # DON'T block the system with time.sleep() - just simulate latency tracking
+        if manual_cancel:
+            cancel_delay = random.uniform(0.150, 0.400)
+            print(f"⏳ Manual cancel requested - simulated {cancel_delay*1000:.0f}ms latency...")
+            # Note: In real HFT systems, you'd schedule this asynchronously, not block
         
         if side == "buy" and self.open_bid_order:
             # Simulate realistic cancel latency
@@ -1080,12 +1025,6 @@ class QuoteEngine:
     def get_open_ask_order(self):
         return self.open_ask_order
 
-    def get_position(self):
-        return self.position
-
-    def get_cash(self):
-        return self.cash
-    
     def _get_adaptive_max_ticks(self, current_orderbook):
         """Calculate adaptive max ticks based on market volatility"""
         if not self.last_orderbook:
@@ -1342,3 +1281,103 @@ class QuoteEngine:
         
         return bid_skew, ask_skew
     
+    def _handle_execution_event(self, event_type, event_data):
+        """Handle callbacks from ExecutionSimulator to keep order state synchronized"""
+        if event_type == 'fill':
+            order_id = event_data['order_id']
+            side = event_data['side']
+            fill_qty = event_data['fill_qty']
+            remaining_qty = event_data['remaining_qty']
+            
+            # Update QuoteEngine order state to match ExecutionSimulator
+            if side == 'buy' and self.open_bid_order and self.open_bid_order.order_id == order_id:
+                if remaining_qty <= 0:
+                    # Order completely filled - remove it
+                    self.open_bid_order = None
+                    print(f"🔄 SYNC: BUY order fully filled, removed from QuoteEngine")
+                else:
+                    # Partial fill - update remaining quantity
+                    self.open_bid_order.remaining_qty = remaining_qty
+                    self.open_bid_order.filled_qty = self.open_bid_order.qty - remaining_qty
+                    print(f"🔄 SYNC: BUY order partially filled, {remaining_qty:.1f} remaining")
+                    
+                # Track the fill for performance metrics
+                self._track_fill()
+                self.status_print_events.add("order_filled")
+                
+                # CRITICAL FIX: Update risk manager with actual position/equity from ExecutionSimulator
+                if self.exec_sim:
+                    current_position = self.exec_sim.position
+                    mid_price = (event_data.get('price', 0) + event_data.get('price', 0)) / 2  # Rough estimate
+                    current_equity = self.exec_sim.mark_to_market(mid_price)
+                    self.risk_manager.update_position_and_pnl(current_position, current_equity)
+                    
+            elif side == 'sell' and self.open_ask_order and self.open_ask_order.order_id == order_id:
+                if remaining_qty <= 0:
+                    # Order completely filled - remove it
+                    self.open_ask_order = None
+                    print(f"🔄 SYNC: SELL order fully filled, removed from QuoteEngine")
+                else:
+                    # Partial fill - update remaining quantity
+                    self.open_ask_order.remaining_qty = remaining_qty
+                    self.open_ask_order.filled_qty = self.open_ask_order.qty - remaining_qty
+                    print(f"🔄 SYNC: SELL order partially filled, {remaining_qty:.1f} remaining")
+                    
+                # Track the fill for performance metrics
+                self._track_fill()
+                self.status_print_events.add("order_filled")
+                
+                # CRITICAL FIX: Update risk manager with actual position/equity from ExecutionSimulator
+                if self.exec_sim:
+                    current_position = self.exec_sim.position
+                    mid_price = (event_data.get('price', 0) + event_data.get('price', 0)) / 2  # Rough estimate
+                    current_equity = self.exec_sim.mark_to_market(mid_price)
+                    self.risk_manager.update_position_and_pnl(current_position, current_equity)
+                
+        elif event_type == 'cancel':
+            order_id = event_data['order_id']
+            side = event_data['side']
+            
+            # Remove the cancelled order from QuoteEngine state
+            if side == 'buy' and self.open_bid_order and self.open_bid_order.order_id == order_id:
+                self.open_bid_order = None
+                print(f"🔄 SYNC: BUY order cancelled, removed from QuoteEngine")
+                self.status_print_events.add("order_cancelled")
+                
+            elif side == 'sell' and self.open_ask_order and self.open_ask_order.order_id == order_id:
+                self.open_ask_order = None
+                print(f"🔄 SYNC: SELL order cancelled, removed from QuoteEngine")
+                self.status_print_events.add("order_cancelled")
+
+    def _validate_order_state_sync(self):
+        """Validate that QuoteEngine and ExecutionSimulator order states are synchronized"""
+        if not self.exec_sim:
+            return True  # No validation needed if no simulator
+            
+        warnings = []
+        
+        # Check bid order consistency
+        if self.open_bid_order:
+            if self.open_bid_order.order_id not in self.exec_sim.live_orders:
+                warnings.append(f"QuoteEngine has BID order {self.open_bid_order.order_id[:8]} but ExecutionSimulator doesn't")
+        
+        # Check ask order consistency  
+        if self.open_ask_order:
+            if self.open_ask_order.order_id not in self.exec_sim.live_orders:
+                warnings.append(f"QuoteEngine has ASK order {self.open_ask_order.order_id[:8]} but ExecutionSimulator doesn't")
+        
+        # Check for orders in ExecutionSimulator that QuoteEngine doesn't know about
+        for order_id, sim_order in self.exec_sim.live_orders.items():
+            if sim_order.side == 'buy' and (not self.open_bid_order or self.open_bid_order.order_id != order_id):
+                warnings.append(f"ExecutionSimulator has BID order {order_id[:8]} but QuoteEngine doesn't")
+            elif sim_order.side == 'sell' and (not self.open_ask_order or self.open_ask_order.order_id != order_id):
+                warnings.append(f"ExecutionSimulator has ASK order {order_id[:8]} but QuoteEngine doesn't")
+        
+        if warnings:
+            print("🚨 ORDER STATE SYNC WARNING:")
+            for warning in warnings:
+                print(f"   {warning}")
+            return False
+            
+        return True
+

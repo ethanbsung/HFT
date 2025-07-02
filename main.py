@@ -21,9 +21,33 @@ async def main():
     print(f"📊 Initial state - Position: {sim.position:.6f}, Cash: {sim.cash:.2f}")
     
     ob = Orderbookstream(symbol=test_symbol, exec_sim=sim, api_key=api_key, api_secret=api_secret)
-    ts = Tradestream(symbol=test_symbol, quote_engine=ob.quote_engine)
+    ts = Tradestream(symbol=test_symbol, quote_engine=ob.quote_engine, exec_sim=sim, api_key=api_key, api_secret=api_secret)
+    
+    # CRITICAL FIX: Ensure ExecutionSimulator callback is properly set up
+    # This guarantees order state synchronization between QuoteEngine and ExecutionSimulator
+    if hasattr(sim, 'quote_engine_callback') and ob.quote_engine:
+        sim.quote_engine_callback = ob.quote_engine._handle_execution_event
+        print("✅ ExecutionSimulator callback properly initialized for order state sync")
+    else:
+        print("❌ WARNING: ExecutionSimulator callback failed to initialize - order sync may fail")
     
     def signal_handler(sig, frame):
+        # CRITICAL FIX: Proper resource cleanup before shutdown
+        print("\n🛑 Shutdown signal received - cleaning up resources...")
+        
+        # Stop data streams properly
+        try:
+            ob.stop()
+            print("✅ Orderbook stream stopped")
+        except Exception as e:
+            print(f"❌ Error stopping orderbook stream: {e}")
+            
+        try:
+            ts.stop()
+            print("✅ Trade stream stopped")
+        except Exception as e:
+            print(f"❌ Error stopping trade stream: {e}")
+        
         # Use the new comprehensive, readable performance report
         ob.quote_engine.print_comprehensive_performance_report()
         
@@ -36,7 +60,15 @@ async def main():
                 best_ask = float(asks[0][0])
                 mid = (best_bid + best_ask) / 2
                 print(f"\n📊 EXECUTION SIMULATOR RESULTS:")
-                print(f"SIM  PnL: {sim.mark_to_market(mid):.2f}, Pos: {sim.position:.6f}, Cash: {sim.cash:.2f}, Fills: {len(sim.fills)}")
+                print(f"SIM  PnL: ${sim.mark_to_market(mid):.2f}, Pos: {sim.position:.1f}, Cash: ${sim.cash:.2f}, Fills: {len(sim.fills)}")
+                
+                # Print fee tier information
+                fee_info = sim.get_fee_tier_info()
+                print(f"📈 TRADING VOLUME & FEES:")
+                print(f"   30-day volume: ${fee_info['volume_30d']:,.0f}")
+                print(f"   Current maker fee: {fee_info['current_fee_bps']:.0f}bps ({fee_info['current_maker_fee']:.4f})")
+                if fee_info['next_tier_volume']:
+                    print(f"   Next tier at: ${fee_info['next_tier_volume']:,.0f} ({fee_info['next_tier_fee']*10000:.0f}bps)")
         
         print("\n💡 BENCHMARKS & CONTEXT:")
         print("   Excellent Python HFT: Sharpe ≥ 0.8, Win Rate ≥ 52%, Max DD ≤ 3%, O:T ≤ 15")
@@ -49,7 +81,7 @@ async def main():
 
     await asyncio.gather(
         ob.stream_data(),
-        ts.load_data()
+        ts.stream_data()
     )
 
 if __name__ == "__main__":
