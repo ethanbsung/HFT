@@ -7,7 +7,7 @@
 
 ## 🚀 Overview
 
-A sophisticated high-frequency trading system implementing automated market making strategies with comprehensive risk management and microsecond-precision latency monitoring. **Features a complete working Python simulation** demonstrating market making profitability and risk controls, with **ongoing C++ implementation** for production-grade performance and to showcase advanced systems programming skills.
+A sophisticated high-frequency trading system implementing automated market making strategies with comprehensive risk management and microsecond-precision latency monitoring. **Features a complete working Python simulation** demonstrating market making algorithms and risk controls, with **ongoing C++ implementation** for production-grade performance and to showcase advanced systems programming skills.
 
 ### Planned Core Features
 - **High-Performance Market Making** - Template-based order book with efficient data structures
@@ -37,10 +37,10 @@ graph TB
     H --> J[Risk Monitor<br/>Real-time Alerts]
     I --> J
     
-    style D fill:#e1f5fe
-    style E fill:#ffebee
-    style F fill:#f3e5f5
-    style J fill:#fff3e0
+    style D fill:#e1f5fe,color:#000
+    style E fill:#ffebee,color:#000
+    style F fill:#f3e5f5,color:#000
+    style J fill:#fff3e0,color:#000
 ```
 
 ## 🛠️ Technical Implementation
@@ -221,7 +221,7 @@ HFT/
 ## 💡 Development Approach
 
 ### Two-Phase Implementation Strategy
-1. **Phase 1 - Python Prototype** ✅: Complete market making simulation with proven profitability
+1. **Phase 1 - Python Prototype** ✅: Complete market making simulation with validated algorithms
 2. **Phase 2 - C++ Optimization** 🔄: High-performance implementation for production deployment
 
 ### Implementation Philosophy
