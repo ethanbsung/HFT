@@ -92,6 +92,8 @@ public:
     static constexpr double ORDER_PLACEMENT_CRITICAL_US = 10000.0; // 10ms
     static constexpr double TICK_TO_TRADE_WARNING_US = 5000.0;  // 5ms
     static constexpr double TICK_TO_TRADE_CRITICAL_US = 15000.0; // 15ms
+    static constexpr double ORDER_CANCELLATION_WARNING_US = 1500.0;  // 1.5ms
+    static constexpr double ORDER_CANCELLATION_CRITICAL_US = 3000.0; // 3ms
     
     // LEARNING: explicit constructor prevents accidental conversions
     explicit LatencyTracker(size_t window_size = DEFAULT_WINDOW_SIZE);
@@ -158,7 +160,7 @@ private:
     double get_threshold(LatencyType type, SpikesSeverity severity) const;
     void check_and_record_spike(LatencyType type, double latency_us);
     LatencyStatistics calculate_statistics(const std::deque<double>& data) const;
-    double calculate_percentile(std::vector<double> data, double percentile) const;
+    double calculate_percentile(const std::deque<double>& data, double percentile) const;
     double calculate_standard_deviation(const std::deque<double>& data, double mean) const;
     std::string latency_type_to_string(LatencyType type) const;
     std::string severity_to_string(SpikesSeverity severity) const;
