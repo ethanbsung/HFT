@@ -63,8 +63,8 @@ graph TB
 - **Market Data Processing**: Real-time order book updates and state management
 
 #### 4. Signal Processing (`cpp/src/signal_engine.cpp`)
-- **Trading Signals**: Mathematical algorithms for market indicator calculation
-- **Statistical Models**: Mean reversion and trend detection algorithms
+- **Market Data Signals**: Real-time processing of order book and trade data
+- **Volatility Estimation**: Statistical models for dynamic spread adjustment
 - **Performance Optimization**: Efficient signal computation with minimal latency
 
 #### 5. Order Management (`cpp/src/order_manager.cpp`)
@@ -119,11 +119,11 @@ class PricingModel<EquityInstrument> {
 ### ✅ C++ Foundation Complete
 - **Project Structure**: Modern CMake build system with proper organization
 - **Core Types**: Fundamental data structures and type definitions (`types.hpp`)
-- **Memory Management**: Custom memory pools and efficient allocation (`memory_pool.cpp`)
 - **Mathematical Foundation**: Statistical calculation framework
 
 ### 🔄 Currently Implementing in C++
 - **Latency Tracking System**: Microsecond-precision performance monitoring (`latency_tracker.cpp`)
+- **Memory Management**: Custom memory pools and efficient allocation (`memory_pool.cpp`)
 - **Order Book Engine**: Efficient limit order book with proper market microstructure
 - **Risk Management Core**: Statistical risk calculations and position monitoring
 - **Market Making Logic**: Porting proven Python algorithms to optimized C++ implementation
@@ -151,10 +151,10 @@ class MarketMaker {
 ```
 
 ### Mathematical Models (Under Development)
-- **Statistical Analysis**: Mean reversion models with significance testing
+- **Spread Calculation**: Optimal bid/ask spread determination based on volatility and volume
+- **Inventory Management**: Position-aware price skewing to manage risk exposure
 - **Risk Calculation**: Portfolio risk metrics and position limits
 - **Performance Metrics**: Sharpe ratio and drawdown analysis
-- **Signal Processing**: Market indicator calculation and trend analysis
 
 ## 📁 Project Structure
 
@@ -165,13 +165,13 @@ HFT/
 │   ├── Makefile               # Alternative build system
 │   ├── include/               # Header files
 │   │   ├── types.hpp          # ✅ Core type definitions
-│   │   ├── memory_pool.hpp    # ✅ Memory management
+│   │   ├── memory_pool.hpp    # 🔄 Memory management
 │   │   ├── latency_tracker.hpp # 🔄 Performance monitoring
 │   │   ├── orderbook_engine.hpp # 📋 Order book implementation
 │   │   ├── signal_engine.hpp   # 📋 Trading signal processing
 │   │   └── order_manager.hpp   # 📋 Order management system
 │   ├── src/                   # Implementation files
-│   │   ├── memory_pool.cpp    # ✅ Memory pool implementation
+│   │   ├── memory_pool.cpp    # 🔄 Memory pool implementation
 │   │   ├── latency_tracker.cpp # 🔄 Latency tracking system
 │   │   ├── orderbook_engine.cpp # 📋 Order book logic
 │   │   ├── signal_engine.cpp   # 📋 Signal processing

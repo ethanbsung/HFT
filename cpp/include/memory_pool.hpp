@@ -143,6 +143,13 @@ public:
     SystemMemoryStats get_system_stats() const;
     void print_memory_report() const;
     
+    // Additional utility methods for advanced learning
+    void optimize_pools();
+    bool is_memory_pressure_high() const;
+    void emergency_cleanup();
+    void print_debug_info() const;
+    void validate_pools() const;
+    
 public:
     ~MemoryManager() = default;
     
