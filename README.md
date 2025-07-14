@@ -113,7 +113,7 @@ class PricingModel<EquityInstrument> {
 - **Working Market Making System**: Complete two-sided quoting with inventory management
 - **Real-time Risk Management**: Position limits, PnL tracking, and drawdown monitoring
 - **Performance Analytics**: Sharpe ratio calculation, win rate analysis, and latency tracking
-- **Hyperliquid Integration**: Live market data streaming and realistic fill simulation
+- **Coinbase Integration**: Live market data streaming and realistic fill simulation
 - **Comprehensive Testing**: Validated trading logic and system functionality
 
 ### ✅ C++ Foundation Complete
@@ -134,19 +134,7 @@ class PricingModel<EquityInstrument> {
 - **Enhanced Analytics**: Comprehensive trading performance measurement
 - **Integration Layer**: Python bindings for visualization and analysis
 
-## 🎯 Trading System Implementation
-
-### ✅ Complete Python Simulation
-The Python implementation provides a fully functional market making system featuring:
-
-**Key Components:**
-- **Two-sided Market Making**: Automated bid/ask placement with inventory management
-- **Real-time Risk Management**: Position limits, PnL tracking, and drawdown monitoring
-- **Market Microstructure**: Realistic queue modeling and fill simulation
-- **Performance Analytics**: Sharpe ratio calculation, win rate analysis, and latency tracking
-- **Hyperliquid Integration**: Live market data streaming and order book processing
-
-### 🔄 C++ Implementation (In Progress)
+## 🎯 C++ Implementation (In Progress)
 ```cpp
 class MarketMaker {
     // Pricing model with inventory consideration
