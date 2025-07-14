@@ -2,7 +2,7 @@
 *A Professional-Grade Market Making Engine with Real-Time Risk Management and Performance Analytics*
 
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
-[![CMake](https://img.shields.io/badge/CMake-3.15+-green.svg)](https://cmake.org/)
+[![CMake](https://img.shields.io/badge/CMake-3.16+-green.svg)](https://cmake.org/)
 [![Real-Time](https://img.shields.io/badge/Real--Time-Optimized-orange.svg)](#core-components)
 [![Risk Management](https://img.shields.io/badge/Risk-Management-red.svg)](#risk-management-engine)
 
