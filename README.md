@@ -4,7 +4,6 @@
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![CMake](https://img.shields.io/badge/CMake-3.16+-green.svg)](https://cmake.org/)
 [![In Development](https://img.shields.io/badge/Status-In%20Development-yellow.svg)](#development-status)
-[![Risk Management](https://img.shields.io/badge/Risk-Management-red.svg)](#risk-management-engine)
 
 ## 🚀 Overview
 
