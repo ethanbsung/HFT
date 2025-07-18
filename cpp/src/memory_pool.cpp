@@ -12,57 +12,57 @@ namespace hft {
 OrderPool::OrderPool(size_t initial_size) 
     : pool_(initial_size), peak_usage_(0), allocation_requests_(0), cache_hits_(0) {
     
-    // TODO 1: Initialize the memory pool with the given size
-    // The pool_ member is already initialized in the initializer list
-    // Think about what other initialization might be needed
-    
-    // TODO 2: Consider pre-warming the pool
-    // Should you acquire and release some objects to warm up the cache?
-    // This can improve performance for the first few allocations
+    // Warm the cache
+    std::vector<Order*> warmup_orders;
+    warmup_orders.reserve(initial_size);
+    for (size_t i = 0; i < initial_size; ++i) {
+      Order* order = pool.acquire();
+      warmup_orders.push_back(order);
+    }
+    for (Order *order : warmup_orders) {
+      pool_.release(order);
+    }
 }
 
 Order* OrderPool::acquire_order() {
-    // TODO 3: Increment allocation request counter
-    // Use atomic operations for thread safety
-    // Which atomic method increments a counter?
+    allocation_requests_++;
     
-    // TODO 4: Try to acquire an order from the underlying pool
-    // Call the appropriate method on pool_ to get an Order*
+    Order* order = pool_.acquire();
     
-    // TODO 5: Handle successful acquisition
-    // If order is not null, increment cache_hits counter
-    // Update peak usage statistics if needed
+    if (order) {
+      cache_hits_++;
+
+      size_t current_in_use = pool_.in_use();
+      size_t prev_peak = peak_usage_.load();
+      while (current_in_use > prev_peak && !peak_usage_.compare_exchange_weak(prev_peak, current_in_use)) {
+        // prev_peak is updated with the latest value if the exchange fails
+      }
     
-    // TODO 6: Update peak usage tracking (thread-safe)
-    // Get current usage from pool_.in_use()
-    // Use compare_exchange_weak to atomically update peak if current > peak
-    // This prevents race conditions in multi-threaded environments
-    
-    return nullptr; // TODO: Replace with actual order
+    return order;
 }
 
 void OrderPool::release_order(Order* order) {
-    // TODO 7: Validate the order pointer
-    // What should you do if order is null?
-    
-    // TODO 8: Release the order back to the pool
-    // Call the appropriate method on pool_ to return the order
+    if (!order) {
+      return;
+    }
+
+    pool_.release(order);
 }
 
 OrderPool::PoolStats OrderPool::get_stats() const {
-    // TODO 9: Create and populate PoolStats structure
-    // Get values from pool_ and atomic counters
-    // What information does the caller need about pool performance?
-    
     PoolStats stats;
-    // TODO: Fill in stats fields
+    stats.total_allocated = pool_.total_allocated();
+    stats.in_use = pool_.in_use();
+    stats.peak_usage = peak_usage_.load();
+    stats.allocation_requests = allocation_requests_.load();
+    stats.cache_hits = cache_hits_.load();
     return stats;
 }
 
 void OrderPool::reset_stats() {
-    // TODO 10: Reset all atomic counters to zero
-    // Which atomic method sets a value?
-    // Reset: peak_usage_, allocation_requests_, cache_hits_
+    peak_usage_.store(0);
+    allocation_requests_.store(0);
+    cache_hits_.store(0);
 }
 
 // =============================================================================
@@ -73,107 +73,85 @@ std::unique_ptr<MemoryManager> MemoryManager::instance_ = nullptr;
 std::once_flag MemoryManager::init_flag_;
 
 MemoryManager::MemoryManager() : order_pool_(1000), peak_memory_usage_(0) {
-    // TODO 11: Initialize the memory manager
-    // The order_pool_ is already initialized with 1000 objects
-    // Think about what other pools or resources might need initialization
-    
-    // TODO 12: Consider logging or metrics initialization
-    // In a production system, you might want to register metrics
-    // or set up monitoring for the memory manager
+  std::cout << "MemoryManager initialized with 1000 order capacity" << std::endl;
 }
 
 MemoryManager& MemoryManager::instance() {
-    // TODO 13: Implement thread-safe singleton pattern
-    // Use std::call_once with init_flag_ to ensure single initialization
-    // Create the instance using std::unique_ptr
-    // Return a reference to the singleton
+    std::call_once(init_flag_, []() {
+      instance_.reset(new MemoryManager());
+    });
     
-    // HINT: std::call_once ensures the lambda runs exactly once
-    // HINT: Use std::unique_ptr constructor with new MemoryManager()
-    
-    return *instance_; // TODO: This assumes instance_ is properly initialized
+    return *instance_;
 }
 
 MemoryManager::SystemMemoryStats MemoryManager::get_system_stats() const {
-    // TODO 14: Collect system-wide memory statistics
-    // Get statistics from order_pool_
-    // Calculate total allocated and in-use bytes
-    
     SystemMemoryStats stats;
-    
-    // TODO 15: Get order pool statistics
-    // Call get_stats() on order_pool_ to get detailed info
-    
-    // TODO 16: Calculate memory usage in bytes
-    // Multiply object counts by sizeof(Order) to get byte usage
-    // Set total_allocated_bytes and total_in_use_bytes
-    
-    // TODO 17: Update peak memory usage atomically
-    // Compare current usage with peak_memory_usage_
-    // Use atomic operations to update peak if current is higher
+
+    auto order_stats = order_pool_.get_stats();
+
+    stats.total_allocated_bytes = order_stats.total_allocated * sizeof(Order);
+    stats.total_in_use_bytes = order_stats.in_use * sizeof(Order);
+    stats.order_pool_usage = order_stats.in_use;
+    stats.peak_memory_usage = peak_memory_usage_.load();
     
     return stats;
 }
 
 void MemoryManager::print_memory_report() const {
-    // TODO 18: Get current system statistics
-    // Call get_system_stats() to get up-to-date information
+    // Get current system statistics
+    auto system_stats = get_system_stats();
     
-    // TODO 19: Get detailed order pool statistics
-    // Call get_stats() on order_pool_ for detailed metrics
+    // Get detailed order pool statistics
+    auto order_stats = order_pool_.get_stats();
     
-    // TODO 20: Print formatted report header
-    // Use std::cout with formatting for a professional-looking report
-    // Include separators and emojis for visual appeal
-    
+    // Print formatted report header
     std::cout << "\n" << std::string(50, '=') << std::endl;
     std::cout << "🧠 MEMORY POOL PERFORMANCE REPORT" << std::endl;
     std::cout << std::string(50, '=') << std::endl;
     
-    // TODO 21: Print system memory statistics
-    // Show total allocated, in use, and peak usage in KB
-    // Use std::fixed and std::setprecision for clean formatting
-    // Convert bytes to KB by dividing by 1024.0
+    // Print system memory statistics in KB
+    std::cout << std::fixed << std::setprecision(2);
+    std::cout << "📊 SYSTEM MEMORY USAGE:" << std::endl;
+    std::cout << "   Total Allocated: " << (system_stats.total_allocated_bytes / 1024.0) << " KB" << std::endl;
+    std::cout << "   Currently In Use: " << (system_stats.total_in_use_bytes / 1024.0) << " KB" << std::endl;
+    std::cout << "   Peak Usage: " << (system_stats.peak_memory_usage / 1024.0) << " KB" << std::endl;
     
-    // TODO 22: Print order pool specific statistics
-    // Show order counts, allocation requests, and cache hit rate
-    // Use the hit_rate() method from PoolStats
+    // Print order pool specific statistics
+    std::cout << "\n📈 ORDER POOL STATISTICS:" << std::endl;
+    std::cout << "   Total Orders: " << order_stats.total_allocated << std::endl;
+    std::cout << "   Orders In Use: " << order_stats.in_use << std::endl;
+    std::cout << "   Peak Usage: " << order_stats.peak_usage << std::endl;
+    std::cout << "   Allocation Requests: " << order_stats.allocation_requests << std::endl;
+    std::cout << "   Cache Hits: " << order_stats.cache_hits << std::endl;
+    std::cout << "   Hit Rate: " << (order_stats.hit_rate() * 100.0) << "%" << std::endl;
     
-    // TODO 23: Calculate and display efficiency metrics
-    // Memory utilization = (in_use / total_allocated) * 100
-    // Handle division by zero case
+    // Calculate and display efficiency metrics
+    double memory_utilization = 0.0;
+    if (system_stats.total_allocated_bytes > 0) {
+        memory_utilization = (static_cast<double>(system_stats.total_in_use_bytes) / 
+                             system_stats.total_allocated_bytes) * 100.0;
+    }
+    std::cout << "\n⚡ EFFICIENCY METRICS:" << std::endl;
+    std::cout << "   Memory Utilization: " << memory_utilization << "%" << std::endl;
     
-    // TODO 24: Provide performance assessment
-    // Based on cache hit rate, categorize performance:
-    // > 95%: Excellent ✅
-    // > 90%: Good 👍  
-    // > 80%: Fair ⚠️
-    // <= 80%: Poor ❌
+    // Provide performance assessment
+    std::cout << "\n🏆 PERFORMANCE ASSESSMENT:" << std::endl;
+    double hit_rate = order_stats.hit_rate() * 100.0;
+    if (hit_rate > 95.0) {
+        std::cout << "   Status: Excellent ✅" << std::endl;
+    } else if (hit_rate > 90.0) {
+        std::cout << "   Status: Good 👍" << std::endl;
+    } else if (hit_rate > 80.0) {
+        std::cout << "   Status: Fair ⚠️" << std::endl;
+    } else {
+        std::cout << "   Status: Poor ❌" << std::endl;
+    }
     
     std::cout << std::string(50, '=') << std::endl;
 }
 
 // =============================================================================
-// TEMPLATE SPECIALIZATIONS
-// =============================================================================
-
-template<>
-MemoryPool<Order>& MemoryManager::get_pool<Order>() {
-    // TODO 25: Return appropriate pool for Order objects
-    // This is a template specialization for Order type
-    // You might return the order_pool_'s underlying pool
-    // Or create a static pool specifically for this purpose
-    
-    // TODO 26: Consider thread safety
-    // If creating a static pool, ensure it's thread-safe
-    // Static local variables are initialized once per program
-    
-    static MemoryPool<Order> order_memory_pool(1000);
-    return order_memory_pool;
-}
-
-// =============================================================================
-// ADDITIONAL UTILITY METHODS (FOR ADVANCED LEARNING)
+// ADDITIONAL UTILITY METHODS
 // =============================================================================
 
 void MemoryManager::optimize_pools() {
