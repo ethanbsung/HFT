@@ -153,14 +153,16 @@ void MemoryManager::print_memory_report() const {
 // =============================================================================
 // ADDITIONAL UTILITY METHODS
 // =============================================================================
-
-void MemoryManager::optimize_pools() {
+template<typename PoolType>
+void MemoryManager::optimize_pools(PoolType& pool) {
     // TODO 27: Implement pool optimization
     // Analyze usage patterns and adjust pool sizes
     // This could involve:
     // - Shrinking underutilized pools
     // - Pre-expanding frequently used pools
     // - Defragmenting memory if needed
+
+    if (stats.peak_usage < stats.total_allocated) pool_
     
     // TODO 28: Log optimization actions
     // In production, you'd want to log what optimizations were performed
@@ -216,85 +218,3 @@ void MemoryManager::validate_pools() const {
 }
 
 } // namespace hft
-
-/*
-================================================================================
-LEARNING ROADMAP - SUGGESTED IMPLEMENTATION ORDER:
-================================================================================
-
-PHASE 1 - BASIC POOL OPERATIONS (Start here):
-- TODO 1-2: OrderPool constructor and initialization
-- TODO 3-6: acquire_order() - core allocation logic
-- TODO 7-8: release_order() - returning objects to pool
-- TODO 9-10: Basic statistics tracking
-
-PHASE 2 - SINGLETON PATTERN (Important C++ concept):
-- TODO 11-13: MemoryManager singleton implementation
-- TODO 14-17: System statistics collection
-- TODO 25-26: Template specializations
-
-PHASE 3 - REPORTING AND MONITORING:
-- TODO 18-24: Comprehensive memory reporting
-- TODO 27-32: Advanced pool management
-- TODO 33-35: Debugging and validation
-
-LEARNING CONCEPTS COVERED:
-🔧 Memory Management:
-  - Object pools for performance
-  - Memory pre-allocation strategies
-  - Thread-safe memory operations
-
-🧵 Concurrency:
-  - Atomic operations (fetch_add, compare_exchange_weak)
-  - Thread-safe singleton pattern
-  - std::once_flag usage
-
-📊 Performance Monitoring:
-  - Cache hit rate calculation
-  - Memory utilization metrics
-  - Peak usage tracking
-
-🏗️ Design Patterns:
-  - Singleton pattern
-  - Object pool pattern
-  - RAII (Resource Acquisition Is Initialization)
-
-HFT-SPECIFIC LEARNING:
-💰 Why Memory Pools Matter in HFT:
-  - malloc/free can take 100+ nanoseconds
-  - Memory pools reduce allocation to ~10 nanoseconds
-  - Predictable memory usage prevents GC pauses
-  - Cache locality improves performance
-
-📈 Performance Metrics:
-  - Cache hit rate should be >95% for good performance
-  - Memory utilization shows efficiency
-  - Peak usage helps size pools correctly
-
-TESTING STRATEGY:
-After implementing each phase, create tests:
-  
-  Phase 1 Test:
-    OrderPool pool(100);
-    Order* order = pool.acquire_order();
-    pool.release_order(order);
-    auto stats = pool.get_stats();
-    
-  Phase 2 Test:
-    MemoryManager& mgr = MemoryManager::instance();
-    mgr.print_memory_report();
-    
-  Phase 3 Test:
-    mgr.validate_pools();
-    mgr.print_debug_info();
-
-ADVANCED CHALLENGES:
-🚀 Once you complete the basics, try:
-  - Implement lock-free memory pools
-  - Add memory alignment for SIMD operations
-  - Create pools for different object sizes
-  - Add memory pressure detection
-  - Implement pool warming strategies
-
-Good luck! Memory management is crucial for HFT performance! 🚀
-*/
