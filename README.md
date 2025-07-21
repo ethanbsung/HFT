@@ -92,19 +92,26 @@ std::optional<Order> try_place_order(const OrderRequest& request);
 
 #### Performance Optimization Techniques
 ```cpp
-// Custom allocators for trading objects
-class OrderAllocator {
-    // Memory pool allocation for order objects
-};
+// Custom memory pools for trading objects (pre-allocation, recycling)
+OrderPool order_pool(1000);
 
-// Efficient mathematical calculations
-void calculate_portfolio_metrics(const std::vector<Position>& positions);
+// Lock-free memory pool for single-threaded, ultra-low-latency paths
+LockFreeMemoryPool<Order> fast_order_pool(10000);
 
-// Template specializations for different instruments
-template<>
-class PricingModel<EquityInstrument> {
-    // Specialized pricing for equity instruments
-};
+// Pre-warming of pools to avoid latency spikes at runtime
+order_pool.warmup();
+
+// Thread-safe statistics and pool management using std::mutex and std::atomic
+std::atomic<size_t> allocation_requests;
+
+// Efficient rolling window latency tracking and real-time statistics
+LatencyTracker latency_tracker(1000);
+
+// RAII for automatic resource management and timing
+{
+    ScopedLatencyMeasurement measure(latency_tracker, LatencyType::ORDER_PLACEMENT);
+    // ... code to measure ...
+}
 ```
 
 ## 📊 Development Status
