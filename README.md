@@ -1,5 +1,5 @@
 # High-Frequency Trading System in C++
-*A Professional-Grade Market Making Engine with Real-Time Risk Management - Currently in Development*
+*An experimental high-frequency trading system with real-time risk management - currently in development*
 
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![CMake](https://img.shields.io/badge/CMake-3.16+-green.svg)](https://cmake.org/)
