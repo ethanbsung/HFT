@@ -11,6 +11,7 @@
 #include <iomanip>    // LEARNING: Output formatting
 #include <chrono>     // For time formatting
 #include <cstring>    // For fast string operations
+#include <cstdio>     // For std::snprintf
 
 namespace hft {
 

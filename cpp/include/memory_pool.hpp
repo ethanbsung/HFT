@@ -1,11 +1,14 @@
 #pragma once
 
+#include "types.hpp"
 #include <memory>
 #include <vector>
 #include <stack>
 #include <mutex>
 #include <cstddef>
 #include <atomic>
+#include <algorithm>
+#include <iostream> // Added for logging in template implementations
 
 namespace hft {
 
@@ -36,7 +39,10 @@ public:
     
     // Memory management
     void reserve(size_t additional_capacity);
-    void shrink_to_fit();
+    void shrink_to_fit(size_t target_objects);
+    
+    // Allow MemoryManager to access private members for debugging
+    friend class MemoryManager;
     
 private:
     void expand_pool(size_t new_capacity);
@@ -110,6 +116,17 @@ public:
     PoolStats get_stats() const;
     void reset_stats();
     
+    // Memory management (compatible with template optimization)
+    void shrink_to_fit(size_t target_objects);
+    void reserve(size_t additional_objects);
+    
+    // Emergency cleanup interface
+    void emergency_shrink_to_target(size_t target_objects);
+    void emergency_reserve(size_t additional_objects);
+    
+    // Allow MemoryManager emergency access to underlying pool
+    friend class MemoryManager;
+    
 private:
     MemoryPool<struct Order> pool_;
     mutable std::atomic<size_t> peak_usage_;
@@ -145,6 +162,8 @@ public:
     
     // Additional utility methods for advanced learning
     void optimize_pools();
+    template<typename PoolType>
+    void optimize_pools(PoolType& pool);
     bool is_memory_pressure_high() const;
     void emergency_cleanup();
     void print_debug_info() const;
@@ -223,6 +242,96 @@ void MemoryPool<T>::expand_pool(size_t new_capacity) {
     memory_blocks_.push_back(std::move(new_block));
     total_allocated_ += new_capacity;
     block_size_ = new_capacity;
+}
+
+template<typename T>
+void MemoryPool<T>::reserve(size_t additional_capacity) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    size_t current_available = available_objects_.size();
+    
+    // Only expand if we don't have enough available objects
+    if (current_available < additional_capacity) {
+        size_t needed = additional_capacity - current_available;
+        expand_pool(needed);
+    }
+}
+
+template<typename T>
+void MemoryPool<T>::shrink_to_fit(size_t target_objects) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    size_t current_in_use = total_allocated_.load() - available_objects_.size();
+    size_t safety_buffer = std::max(static_cast<size_t>(100), current_in_use / 10); // 10% buffer or min 100
+    size_t minimum_objects = current_in_use + safety_buffer;
+    
+    // Safety check: don't shrink below minimum safe size
+    size_t effective_target = std::max(target_objects, minimum_objects);
+    size_t target_blocks = (effective_target + block_size_ - 1) / block_size_; // Ceiling division
+    size_t current_blocks = memory_blocks_.size();
+    
+    // Log the shrinking decision
+    std::cout << "[POOL SHRINK] Target: " << target_objects 
+              << ", Effective: " << effective_target 
+              << ", Current: " << total_allocated_.load()
+              << ", In Use: " << current_in_use << std::endl;
+    
+    if (current_blocks <= target_blocks) {
+        std::cout << "[POOL SHRINK] No shrinking needed. Current blocks: " 
+                  << current_blocks << ", Target blocks: " << target_blocks << std::endl;
+        return;
+    }
+    
+    size_t blocks_to_remove = current_blocks - target_blocks;
+    size_t blocks_removed = 0;
+    
+    for (auto it = memory_blocks_.begin(); it != memory_blocks_.end() && blocks_removed < blocks_to_remove; ) {
+        T* block_start = it->get();
+        T* block_end = block_start + block_size_;
+
+        // Count how many objects from this block are in available_objects_
+        std::stack<T*> temp_stack;
+        size_t objects_from_block = 0;
+
+        while (!available_objects_.empty()) {
+            T* obj = available_objects_.top();
+            available_objects_.pop();
+
+            if (obj >= block_start && obj < block_end) {
+                objects_from_block++;
+            } else {
+                temp_stack.push(obj);
+            }
+        }
+
+        // Restore non-block objects
+        while (!temp_stack.empty()) {
+            available_objects_.push(temp_stack.top());
+            temp_stack.pop();
+        }
+
+        // If all objects from this block were available, remove the block
+        if (objects_from_block == block_size_) {
+            std::cout << "[POOL SHRINK] Removing block " << (blocks_removed + 1) 
+                      << "/" << blocks_to_remove << " (" << block_size_ 
+                      << " objects)" << std::endl;
+            
+            it = memory_blocks_.erase(it);
+            total_allocated_ -= block_size_;
+            blocks_removed++;
+        } else {
+            // Put objects back if keeping the block
+            for (size_t i = 0; i < objects_from_block; ++i) {
+                available_objects_.push(block_start + i);
+            }
+            ++it;
+        }
+    }
+    
+    // Final logging
+    std::cout << "[POOL SHRINK] Complete. Removed " << blocks_removed 
+              << " blocks. New total: " << total_allocated_.load() 
+              << " objects" << std::endl;
 }
 
 // Lock-free pool implementation
