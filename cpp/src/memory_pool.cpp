@@ -37,7 +37,7 @@ Order* OrderPool::acquire_order() {
       while (current_in_use > prev_peak && !peak_usage_.compare_exchange_weak(prev_peak, current_in_use)) {
         // prev_peak is updated with the latest value if the exchange fails
       }
-    }
+      }
     
     return order;
 }
