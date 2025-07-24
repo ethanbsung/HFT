@@ -13,6 +13,9 @@
 
 namespace hft {
 
+// Forward declarations
+class OrderBookEngine;
+
 /**
  * Order execution states for tracking order lifecycle
  */
@@ -309,6 +312,15 @@ public:
     void set_risk_callback(RiskCallback callback);
     
     // =========================================================================
+    // INTEGRATION WITH ORDER BOOK ENGINE
+    // =========================================================================
+    
+    /**
+     * Set OrderBookEngine reference for order execution
+     */
+    void set_orderbook_engine(OrderBookEngine* orderbook_engine);
+    
+    // =========================================================================
     // SYSTEM MONITORING AND DEBUG
     // =========================================================================
     
@@ -341,6 +353,9 @@ private:
     bool check_daily_loss_limit() const noexcept;
     bool check_order_rate_limit() const noexcept;
     
+    // Market impact calculation
+    double calculate_market_impact(quantity_t quantity, price_t price) const;
+    
     // Position update helpers
     void update_position_internal(quantity_t quantity, price_t price, Side side);
     void calculate_realized_pnl(quantity_t closed_qty, price_t close_price);
@@ -358,15 +373,22 @@ private:
     // MEMBER VARIABLES (ORGANIZED FOR CACHE EFFICIENCY)
     // =========================================================================
     
-    // External dependencies
+    // =========================================================================
+    // CORE COMPONENTS
+    // =========================================================================
+    
     MemoryManager& memory_manager_;
     LatencyTracker& latency_tracker_;
-    
+    OrderBookEngine* orderbook_engine_;  // Integration point for order execution
+
     // Order storage and lookup (hot path data)
     std::unordered_map<uint64_t, OrderInfo> orders_;           // All orders
-    std::unordered_set<uint64_t> active_orders_;               // Currently active
-    std::unordered_set<uint64_t> pending_orders_;              // Pending submission
+    std::unordered_set<uint64_t> pending_orders_;              // Orders awaiting submission
+    std::unordered_set<uint64_t> active_orders_;               // Orders in market
     
+    // **CRITICAL: Track pooled orders for proper memory management**
+    std::unordered_map<uint64_t, Order*> pooled_orders_;       // Pointers to pooled orders
+
     // Order ID generation (lock-free)
     std::atomic<uint64_t> next_order_id_;
     
@@ -380,7 +402,7 @@ private:
     ExecutionStats execution_stats_;
     
     // Rate limiting for risk management
-    std::queue<timestamp_t> recent_orders_;
+    mutable std::queue<timestamp_t> recent_orders_;
     mutable std::mutex rate_limit_mutex_;
     
     // Event callbacks

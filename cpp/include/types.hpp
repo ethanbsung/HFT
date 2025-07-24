@@ -81,6 +81,31 @@ struct Trade {
         : timestamp(ts), price(p), quantity(q), side(s) {}
 };
 
+// Market depth structure for Level 2 data
+struct MarketDepth {
+    std::vector<PriceLevel> bids;
+    std::vector<PriceLevel> asks;
+    uint32_t depth_levels;
+    timestamp_t timestamp;
+    
+    MarketDepth(uint32_t levels = 10) : depth_levels(levels), timestamp(now()) {
+        bids.reserve(levels);
+        asks.reserve(levels);
+    }
+};
+
+// Order book statistics structure
+struct OrderBookStats {
+    uint64_t total_orders_processed;
+    uint64_t total_trades;
+    quantity_t total_volume;
+    timestamp_t last_trade_time;
+    double avg_spread_bps;
+    
+    OrderBookStats() : total_orders_processed(0), total_trades(0), 
+                       total_volume(0.0), avg_spread_bps(0.0) {}
+};
+
 // Order management structures
 struct Order {
     uint64_t order_id;

@@ -126,8 +126,8 @@ void OrderPool::emergency_reserve(size_t additional_objects) {
 std::unique_ptr<MemoryManager> MemoryManager::instance_ = nullptr;
 std::once_flag MemoryManager::init_flag_;
 
-MemoryManager::MemoryManager() : order_pool_(1000), peak_memory_usage_(0) {
-  std::cout << "MemoryManager initialized with 1000 order capacity" << std::endl;
+MemoryManager::MemoryManager() : order_pool_(1000), trade_execution_pool_(1000), peak_memory_usage_(0) {
+  std::cout << "MemoryManager initialized with 1000 order capacity and 1000 trade execution capacity" << std::endl;
 }
 
 MemoryManager& MemoryManager::instance() {

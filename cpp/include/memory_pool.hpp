@@ -145,6 +145,9 @@ public:
     // Object-specific pools
     OrderPool& order_pool() { return order_pool_; }
     
+    // Add TradeExecution pool for efficient trade processing
+    MemoryPool<TradeExecution>& trade_execution_pool() { return trade_execution_pool_; }
+    
     // Generic pools for different sizes
     template<typename T>
     MemoryPool<T>& get_pool();
@@ -176,6 +179,7 @@ private:
     MemoryManager();
     
     OrderPool order_pool_;
+    MemoryPool<TradeExecution> trade_execution_pool_;  // Pool for trade executions
     mutable std::atomic<size_t> peak_memory_usage_;
     
     // Singleton pattern
