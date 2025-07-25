@@ -139,3 +139,7 @@ package.json
 cdp_api_key.json
 
 test_hft
+test_latency
+test_memory
+test_orderbook_engine
+test_order_manager
