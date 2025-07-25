@@ -7,7 +7,7 @@
 
 ## 🚀 Overview
 
-A sophisticated high-frequency trading system implementing automated market making strategies with comprehensive risk management and **production-grade microsecond-precision latency monitoring**. Features a **complete working Python simulation** demonstrating market making algorithms and **optimized C++ implementation** achieving **sub-100ns performance** suitable for high-frequency trading environments.
+A sophisticated high-frequency trading system implementing automated market making strategies with comprehensive risk management and **microsecond-precision latency monitoring**. Features a **complete working Python simulation** demonstrating market making algorithms and **optimized C++ implementation** achieving **sub-100ns performance** suitable for high-frequency trading environments.
 
 ### 🏆 Performance Achievements
 - **78.9% latency reduction** - From 60.6ns to 12.8ns per operation
