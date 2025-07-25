@@ -327,4 +327,4 @@ void OrderBookEngine::add_order() {
 
 ---
 
-*A benchmark-proven quantitative finance system featuring **comprehensive C++ implementation** with **sub-100ns performance**, **75+ unit tests**, and **microsecond-precision monitoring**. Demonstrates both quantitative finance domain expertise and advanced high-performance systems programming skills.*
+*A market making algorithm featuring **comprehensive C++ implementation** with **sub-100ns performance**, **75+ unit tests**, and **microsecond-precision monitoring**.
