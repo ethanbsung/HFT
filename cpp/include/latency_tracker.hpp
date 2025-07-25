@@ -415,10 +415,16 @@ public:
     void add_latency(LatencyType type, double latency_us);
     void add_latency(LatencyType type, const duration_us_t& duration);
     
-    // FAST PATH: Only spike detection, no statistics
+    // FAST PATH: Only spike detection and approximate percentiles
     inline void add_latency_fast_path(LatencyType type, double latency_us) noexcept {
+        size_t index = static_cast<size_t>(type);
         // Only do critical operations in hot path
-        fast_buffers_[static_cast<size_t>(type)].push(latency_us);
+        fast_buffers_[index].push(latency_us);
+        
+        // Update approximate percentile calculators for fast statistics
+        p95_calculators_[index].update(latency_us);
+        p99_calculators_[index].update(latency_us);
+        
         check_and_record_spike_fast(type, latency_us);
     }
     

@@ -159,105 +159,111 @@ MatchResult OrderBookEngine::add_order(const Order& order, std::vector<TradeExec
         return MatchResult::REJECTED;
     }
     
-    std::lock_guard<std::mutex> lock(book_mutex_);
-    
-    // Create a mutable copy of the order for matching
-    Order working_order = order;
+    // Variables to store callback data outside the lock
+    bool should_notify_book_update = false;
+    bool should_notify_depth_update = false;
     MatchResult final_result = MatchResult::NO_MATCH;
     
-    // Attempt to match the order against existing orders
-    MatchResult match_result = match_order_internal(working_order, executions);
-    
-    // Handle matching results
-    switch (match_result) {
-        case MatchResult::FULL_FILL:
-            // Order completely filled - nothing to add to book
-            final_result = MatchResult::FULL_FILL;
-            break;
-            
-        case MatchResult::PARTIAL_FILL:
-            // Order partially filled - add remainder to book
-            if (working_order.remaining_quantity > 0) {
+    // Critical section - hold lock only for book operations
+    {
+        std::lock_guard<std::mutex> lock(book_mutex_);
+        
+        // Create a mutable copy of the order for matching
+        Order working_order = order;
+        
+        // Attempt to match the order against existing orders
+        MatchResult match_result = match_order_internal(working_order, executions);
+        
+        // Update working_order's remaining_quantity based on executions
+        quantity_t total_filled = 0.0;
+        for (const auto& execution : executions) {
+            total_filled += execution.quantity;
+        }
+        working_order.remaining_quantity = working_order.original_quantity - total_filled;
+        
+        // Handle matching results
+        switch (match_result) {
+            case MatchResult::FULL_FILL:
+                // Order completely filled - nothing to add to book
+                final_result = MatchResult::FULL_FILL;
+                break;
+                
+            case MatchResult::PARTIAL_FILL:
+                // Order partially filled - add remainder to book
+                if (working_order.remaining_quantity > 0) {
+                    add_to_price_level(get_book_side(working_order.side), 
+                                     working_order.price, working_order);
+                    active_orders_[working_order.order_id] = working_order;
+                    order_to_price_[working_order.order_id] = working_order.price;
+                }
+                final_result = MatchResult::PARTIAL_FILL;
+                break;
+                
+            case MatchResult::NO_MATCH:
+                // No match found - add entire order to book
                 add_to_price_level(get_book_side(working_order.side), 
                                  working_order.price, working_order);
                 active_orders_[working_order.order_id] = working_order;
                 order_to_price_[working_order.order_id] = working_order.price;
-            }
-            final_result = MatchResult::PARTIAL_FILL;
-            break;
-            
-        case MatchResult::NO_MATCH:
-            // No match found - add entire order to book
-            add_to_price_level(get_book_side(working_order.side), 
-                             working_order.price, working_order);
-            active_orders_[working_order.order_id] = working_order;
-            order_to_price_[working_order.order_id] = working_order.price;
-            final_result = MatchResult::NO_MATCH;
-            break;
-            
-        case MatchResult::REJECTED:
-            // Order was rejected during matching
-            notify_rejection(working_order.order_id, "Order rejected during matching");
-            final_result = MatchResult::REJECTED;
-            break;
-    }
-    
-    // Update top of book after any changes
-    if (final_result != MatchResult::REJECTED) {
-        update_top_of_book();
-        notify_book_update();
-        
-        // If there were executions, notify about depth changes
-        if (!executions.empty()) {
-            notify_depth_update();
+                final_result = MatchResult::NO_MATCH;
+                break;
+                
+            case MatchResult::REJECTED:
+                // Order was rejected during matching
+                final_result = MatchResult::REJECTED;
+                break;
         }
+        
+        // Update top of book after any changes
+        if (final_result != MatchResult::REJECTED) {
+            update_top_of_book();
+            should_notify_book_update = true;
+            
+            // Always notify about depth changes when book state changes
+            should_notify_depth_update = true;
+        }
+        
+        // Update statistics for trade executions
+        for (const auto& execution : executions) {
+            update_statistics(execution);
+        }
+        
+        // Update order processing statistics (thread-safe update)
+        if (final_result != MatchResult::REJECTED) {
+            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            statistics_.total_orders_processed++;
+        }
+    } // Lock released here
+    
+    // Call callbacks AFTER releasing the lock to prevent deadlock
+    if (final_result == MatchResult::REJECTED) {
+        notify_rejection(order.order_id, "Order rejected during matching");
     }
     
-    // Process any trade executions
+    if (should_notify_book_update) {
+        notify_book_update();
+    }
+    
+    if (should_notify_depth_update) {
+        notify_depth_update();
+    }
+    
+    // Process trade execution callbacks outside the lock
     for (const auto& execution : executions) {
         // Notify OrderManager about fills
-        if (execution.aggressor_order_id == working_order.order_id) {
+        if (execution.aggressor_order_id == order.order_id) {
             // This order was the aggressor
             bool is_final_fill = (final_result == MatchResult::FULL_FILL);
             notify_fill(execution.aggressor_order_id, execution.quantity, 
                        execution.price, is_final_fill);
         }
         
-        // Notify about the passive order fill
-        auto passive_order_it = active_orders_.find(execution.passive_order_id);
-        if (passive_order_it != active_orders_.end()) {
-            // Update passive order's remaining quantity
-            passive_order_it->second.remaining_quantity -= execution.quantity;
-            
-            bool passive_filled = (passive_order_it->second.remaining_quantity <= 0);
-            notify_fill(execution.passive_order_id, execution.quantity, 
-                       execution.price, passive_filled);
-            
-            // Remove passive order if completely filled
-            if (passive_filled) {
-                remove_from_price_level(get_book_side(get_opposite_side(working_order.side)),
-                                      execution.price, execution.passive_order_id,
-                                      execution.quantity);
-                active_orders_.erase(execution.passive_order_id);
-                order_to_price_.erase(execution.passive_order_id);
-                order_to_quantity_.erase(execution.passive_order_id);
-            } else {
-                // Update tracking map for partially filled order
-                order_to_quantity_[execution.passive_order_id] = passive_order_it->second.remaining_quantity;
-            }
-        }
+        // Notify about passive order fills
+        notify_fill(execution.passive_order_id, execution.quantity, 
+                   execution.price, true); // Passive fills are always final in this context
         
         // Notify trade callback
         notify_trade_execution(execution);
-        
-        // Update statistics
-        update_statistics(execution);
-    }
-    
-    // Update order processing statistics (thread-safe update)
-    if (final_result != MatchResult::REJECTED) {
-        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
-        statistics_.total_orders_processed++;
     }
     
     return final_result;
@@ -385,7 +391,13 @@ MatchResult OrderBookEngine::process_market_order(Side side, quantity_t quantity
     
     MEASURE_LATENCY(latency_tracker_, LatencyType::ORDER_BOOK_UPDATE);
     
-    std::lock_guard<std::mutex> lock(book_mutex_);
+    // Variables to hold data for callbacks outside the lock
+    MatchResult final_result;
+    std::vector<TradeExecution> executions_for_callbacks;
+    
+    // Critical section - hold lock only for book operations
+    {
+        std::lock_guard<std::mutex> lock(book_mutex_);
     
     executions.clear();
     
@@ -573,22 +585,35 @@ MatchResult OrderBookEngine::process_market_order(Side side, quantity_t quantity
     
     // Update book state
     update_best_prices();
-    notify_book_update();
     
-    // Notify callbacks about trades
+    // Determine final result before releasing lock (don't redeclare)
+    if (remaining_quantity == 0) {
+        final_result = MatchResult::FULL_FILL;
+    } else if (any_matches) {
+        final_result = MatchResult::PARTIAL_FILL;
+    } else {
+        final_result = MatchResult::NO_MATCH;
+    }
+    
+    // Update statistics while still holding lock
     for (const auto& execution : executions) {
-        notify_trade_execution(execution);
         update_statistics(execution);
     }
     
-    // Determine final result
-    if (remaining_quantity == 0) {
-        return MatchResult::FULL_FILL;
-    } else if (any_matches) {
-        return MatchResult::PARTIAL_FILL;
-    } else {
-        return MatchResult::NO_MATCH;
+    // Store data for callbacks outside the lock
+    executions_for_callbacks = executions;
+    
+    } // Release lock here (end of the critical section)
+    
+    // Call callbacks AFTER releasing the lock to prevent deadlock
+    notify_book_update();
+    
+    // Notify callbacks about trades
+    for (const auto& execution : executions_for_callbacks) {
+        notify_trade_execution(execution);
     }
+    
+    return final_result;
 }
 
 // =============================================================================
@@ -628,7 +653,7 @@ MarketDepth OrderBookEngine::get_market_depth(uint32_t levels) const {
     
     // Extract top N levels from bids (highest to lowest)
     uint32_t bid_count = 0;
-    for (auto it = bids_.rbegin(); it != bids_.rend() && bid_count < levels; ++it, ++bid_count) {
+    for (auto it = bids_.begin(); it != bids_.end() && bid_count < levels; ++it, ++bid_count) {
         depth.bids.emplace_back(it->first, it->second.total_quantity);
     }
     
@@ -682,82 +707,85 @@ bool OrderBookEngine::is_market_crossed() const {
 void OrderBookEngine::apply_market_data_update(const MarketDepth& update) {
     // CRITICAL IMPLEMENTATION: Apply external market data feed efficiently
     
-    std::lock_guard<std::mutex> lock(book_mutex_);
-    
-    // Clear current book state for snapshot updates
-    if (update.depth_levels > 0) {
-        bids_.clear();
-        asks_.clear();
-        active_orders_.clear();
-        order_to_price_.clear();
-        order_to_quantity_.clear();
-    }
-    
-    // Apply new price levels from market data
-    uint64_t synthetic_order_id = 1000000; // Start synthetic IDs high to avoid conflicts
-    
-    // Apply bid levels
-    for (const auto& bid_level : update.bids) {
-        if (bid_level.quantity > 0) {
-            PriceLevel& level = bids_[bid_level.price];
-            level.price = bid_level.price;
-            level.total_quantity = bid_level.quantity;
-            level.last_update = update.timestamp;
-            
-            // Create synthetic order for this price level
-            level.order_queue.push(synthetic_order_id);
-            
-            // Track in active orders (for market data orders)
-            Order synthetic_order;
-            synthetic_order.order_id = synthetic_order_id;
-            synthetic_order.side = Side::BUY;
-            synthetic_order.price = bid_level.price;
-            synthetic_order.original_quantity = bid_level.quantity;
-            synthetic_order.remaining_quantity = bid_level.quantity;
-            synthetic_order.status = OrderStatus::ACTIVE;
-            synthetic_order.entry_time = update.timestamp;
-            
-            active_orders_[synthetic_order_id] = synthetic_order;
-            order_to_price_[synthetic_order_id] = bid_level.price;
-            order_to_quantity_[synthetic_order_id] = bid_level.quantity;
-            
-            synthetic_order_id++;
+    // Critical section - hold lock only for book operations
+    {
+        std::lock_guard<std::mutex> lock(book_mutex_);
+        
+        // Clear current book state for snapshot updates
+        if (update.depth_levels > 0) {
+            bids_.clear();
+            asks_.clear();
+            active_orders_.clear();
+            order_to_price_.clear();
+            order_to_quantity_.clear();
         }
-    }
-    
-    // Apply ask levels
-    for (const auto& ask_level : update.asks) {
-        if (ask_level.quantity > 0) {
-            PriceLevel& level = asks_[ask_level.price];
-            level.price = ask_level.price;
-            level.total_quantity = ask_level.quantity;
-            level.last_update = update.timestamp;
-            
-            // Create synthetic order for this price level
-            level.order_queue.push(synthetic_order_id);
-            
-            // Track in active orders (for market data orders)
-            Order synthetic_order;
-            synthetic_order.order_id = synthetic_order_id;
-            synthetic_order.side = Side::SELL;
-            synthetic_order.price = ask_level.price;
-            synthetic_order.original_quantity = ask_level.quantity;
-            synthetic_order.remaining_quantity = ask_level.quantity;
-            synthetic_order.status = OrderStatus::ACTIVE;
-            synthetic_order.entry_time = update.timestamp;
-            
-            active_orders_[synthetic_order_id] = synthetic_order;
-            order_to_price_[synthetic_order_id] = ask_level.price;
-            order_to_quantity_[synthetic_order_id] = ask_level.quantity;
-            
-            synthetic_order_id++;
+        
+        // Apply new price levels from market data
+        uint64_t synthetic_order_id = 1000000; // Start synthetic IDs high to avoid conflicts
+        
+        // Apply bid levels
+        for (const auto& bid_level : update.bids) {
+            if (bid_level.quantity > 0) {
+                PriceLevel& level = bids_[bid_level.price];
+                level.price = bid_level.price;
+                level.total_quantity = bid_level.quantity;
+                level.last_update = update.timestamp;
+                
+                // Create synthetic order for this price level
+                level.order_queue.push(synthetic_order_id);
+                
+                // Track in active orders (for market data orders)
+                Order synthetic_order;
+                synthetic_order.order_id = synthetic_order_id;
+                synthetic_order.side = Side::BUY;
+                synthetic_order.price = bid_level.price;
+                synthetic_order.original_quantity = bid_level.quantity;
+                synthetic_order.remaining_quantity = bid_level.quantity;
+                synthetic_order.status = OrderStatus::ACTIVE;
+                synthetic_order.entry_time = update.timestamp;
+                
+                active_orders_[synthetic_order_id] = synthetic_order;
+                order_to_price_[synthetic_order_id] = bid_level.price;
+                order_to_quantity_[synthetic_order_id] = bid_level.quantity;
+                
+                synthetic_order_id++;
+            }
         }
-    }
+        
+        // Apply ask levels
+        for (const auto& ask_level : update.asks) {
+            if (ask_level.quantity > 0) {
+                PriceLevel& level = asks_[ask_level.price];
+                level.price = ask_level.price;
+                level.total_quantity = ask_level.quantity;
+                level.last_update = update.timestamp;
+                
+                // Create synthetic order for this price level
+                level.order_queue.push(synthetic_order_id);
+                
+                // Track in active orders (for market data orders)
+                Order synthetic_order;
+                synthetic_order.order_id = synthetic_order_id;
+                synthetic_order.side = Side::SELL;
+                synthetic_order.price = ask_level.price;
+                synthetic_order.original_quantity = ask_level.quantity;
+                synthetic_order.remaining_quantity = ask_level.quantity;
+                synthetic_order.status = OrderStatus::ACTIVE;
+                synthetic_order.entry_time = update.timestamp;
+                
+                active_orders_[synthetic_order_id] = synthetic_order;
+                order_to_price_[synthetic_order_id] = ask_level.price;
+                order_to_quantity_[synthetic_order_id] = ask_level.quantity;
+                
+                synthetic_order_id++;
+            }
+        }
+        
+        // Update atomic best bid/ask
+        update_best_prices();
+    } // Lock released here
     
-    // Update atomic best bid/ask
-    update_best_prices();
-    
-    // Notify callbacks of update
+    // Call callbacks AFTER releasing the lock to prevent deadlock
     notify_book_update();
     notify_depth_update();
 }
@@ -1020,9 +1048,15 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
         auto& matching_side = asks_;
         auto it = matching_side.begin();
         
+        std::cout << "[DEBUG] BUY order " << order.order_id << " matching against " << matching_side.size() << " ask levels" << std::endl;
+        
         while (it != matching_side.end() && remaining_quantity > 0) {
             price_t level_price = it->first;
             PriceLevel& level = it->second;
+            
+            std::cout << "[DEBUG] Processing ask level at $" << level_price 
+                      << " with total_qty=" << level.total_quantity 
+                      << " queue_size=" << level.order_queue.size() << std::endl;
             
             // Check if price is matchable (buy order price >= ask price)
             if (order.price < level_price) {
@@ -1032,22 +1066,27 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
             // Process orders in the queue at this price level (FIFO)
             while (!level.order_queue.empty() && remaining_quantity > 0) {
                 uint64_t passive_order_id = level.order_queue.front();
-                level.order_queue.pop();
                 
                 // Skip cancelled orders (efficient lazy cleanup)
                 if (cancelled_orders_.find(passive_order_id) != cancelled_orders_.end()) {
+                    level.order_queue.pop();
                     continue;
                 }
                 
                 // Find the passive order details
                 auto passive_order_it = active_orders_.find(passive_order_id);
                 if (passive_order_it == active_orders_.end()) {
+                    level.order_queue.pop();
                     continue;
                 }
                 
                 Order& passive_order = passive_order_it->second;
                 quantity_t available_quantity = passive_order.remaining_quantity;
                 quantity_t trade_quantity = std::min(remaining_quantity, available_quantity);
+                
+                std::cout << "[DEBUG] Matching against order " << passive_order_id 
+                          << " available=" << available_quantity 
+                          << " trade_qty=" << trade_quantity << std::endl;
                 
                 if (trade_quantity > 0) {
                     // Create trade execution directly in vector to avoid pool copy overhead
@@ -1071,17 +1110,55 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
                     
                     // Remove passive order if completely filled
                     if (passive_order.remaining_quantity <= 0) {
+                        std::cout << "[DEBUG] Order " << passive_order_id << " completely filled, removing" << std::endl;
+                        level.order_queue.pop();
                         active_orders_.erase(passive_order_id);
                         order_to_price_.erase(passive_order_id);
                         order_to_quantity_.erase(passive_order_id);
+                    } else {
+                        // Order partially filled - update tracking map and keep in queue
+                        std::cout << "[DEBUG] Order " << passive_order_id 
+                                  << " partially filled, remaining=" << passive_order.remaining_quantity << std::endl;
+                        order_to_quantity_[passive_order_id] = passive_order.remaining_quantity;
+                        
+                        // Recalculate level total_quantity to ensure consistency
+                        quantity_t old_total = level.total_quantity;
+                        level.total_quantity = 0.0;
+                        std::queue<uint64_t> temp_queue = level.order_queue;
+                        size_t queue_size = 0;
+                        while (!temp_queue.empty()) {
+                            uint64_t oid = temp_queue.front();
+                            temp_queue.pop();
+                            queue_size++;
+                            auto order_it = active_orders_.find(oid);
+                            if (order_it != active_orders_.end()) {
+                                level.total_quantity += order_it->second.remaining_quantity;
+                                std::cout << "[DEBUG] Queue order " << oid 
+                                          << " remaining_qty=" << order_it->second.remaining_quantity << std::endl;
+                            } else {
+                                std::cout << "[DEBUG] Queue order " << oid << " NOT FOUND in active_orders!" << std::endl;
+                            }
+                        }
+                        std::cout << "[DEBUG] Level recalc: old_total=" << old_total 
+                                  << " new_total=" << level.total_quantity 
+                                  << " queue_size=" << queue_size << std::endl;
+                        
+                        // Stop processing this level since the first order is partially filled
+                        break;
                     }
+                } else {
+                    level.order_queue.pop();
                 }
             }
             
             // Remove price level if no more orders
+            std::cout << "[DEBUG] Checking level removal: queue_empty=" << level.order_queue.empty() 
+                      << " total_qty=" << level.total_quantity << std::endl;
             if (level.order_queue.empty() || level.total_quantity <= 0) {
+                std::cout << "[DEBUG] REMOVING price level $" << level_price << std::endl;
                 it = matching_side.erase(it);
             } else {
+                std::cout << "[DEBUG] KEEPING price level $" << level_price << std::endl;
                 ++it;
             }
         }
@@ -1102,16 +1179,17 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
             // Process orders in the queue at this price level (FIFO)
             while (!level.order_queue.empty() && remaining_quantity > 0) {
                 uint64_t passive_order_id = level.order_queue.front();
-                level.order_queue.pop();
                 
                 // Skip cancelled orders (efficient lazy cleanup)
                 if (cancelled_orders_.find(passive_order_id) != cancelled_orders_.end()) {
+                    level.order_queue.pop();
                     continue;
                 }
                 
                 // Find the passive order details
                 auto passive_order_it = active_orders_.find(passive_order_id);
                 if (passive_order_it == active_orders_.end()) {
+                    level.order_queue.pop();
                     continue;
                 }
                 
@@ -1141,10 +1219,29 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
                     
                     // Remove passive order if completely filled
                     if (passive_order.remaining_quantity <= 0) {
+                        level.order_queue.pop();
                         active_orders_.erase(passive_order_id);
                         order_to_price_.erase(passive_order_id);
                         order_to_quantity_.erase(passive_order_id);
+                    } else {
+                        // Order partially filled - update tracking map and keep in queue
+                        order_to_quantity_[passive_order_id] = passive_order.remaining_quantity;
+                        // Recalculate level total_quantity to ensure consistency
+                        level.total_quantity = 0.0;
+                        std::queue<uint64_t> temp_queue = level.order_queue;
+                        while (!temp_queue.empty()) {
+                            uint64_t oid = temp_queue.front();
+                            temp_queue.pop();
+                            auto order_it = active_orders_.find(oid);
+                            if (order_it != active_orders_.end()) {
+                                level.total_quantity += order_it->second.remaining_quantity;
+                            }
+                        }
+                        // Stop processing this level since the first order is partially filled
+                        break;
                     }
+                } else {
+                    level.order_queue.pop();
                 }
             }
             

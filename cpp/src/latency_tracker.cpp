@@ -32,14 +32,10 @@ void LatencyTracker::add_latency(LatencyType type, double latency_us) {
         latency_windows_[index].pop_front();
     }
     
-    // Add to fast buffer only if we have room within window size
-    // This ensures fast_buffer respects window_size_ parameter
-    if (fast_buffers_[index].size() < window_size_) {
+    // Add to fast buffer only if it can maintain same size as deque
+    // Fast buffer has fixed size 1024, so only use it for small windows
+    if (window_size_ <= 1024) {
         fast_buffers_[index].push(latency_us);
-    } else {
-        // Fast buffer is at capacity - we'll rely on the deque for accuracy
-        // But still update the fast buffer for performance monitoring
-        fast_buffers_[index].push(latency_us); // This will overwrite oldest
     }
     
     // Update approximate percentile calculators (O(1) operation)
@@ -66,20 +62,25 @@ void LatencyTracker::add_latency(LatencyType type, const duration_us_t& duration
 // =============================================================================
 
 LatencyStatistics LatencyTracker::get_statistics(LatencyType type) const {
-    // Use fast path if we have enough data in approximate calculators
-    if (p95_calculators_[static_cast<size_t>(type)].sample_count() >= 100) {
-        return calculate_statistics_fast(type);
-    }
-    
-    // Fallback to precise calculation for small datasets
     size_t index = static_cast<size_t>(type);
     const auto& data = latency_windows_[index];
     
+    // Check if we have fast buffer data even when regular data is empty
+    auto fast_snapshot = fast_buffers_[index].snapshot();
+    
+    // Use fast path if we have data in fast buffers and approximate calculators
+    // or when the regular deque is empty but fast buffer has data (fast-only mode)
+    if ((p95_calculators_[index].sample_count() >= 10 && !fast_snapshot.empty()) || 
+        (data.empty() && !fast_snapshot.empty())) {
+        return calculate_statistics_fast(type);
+    }
+    
+    // If both data sources are empty, return empty stats
     if (data.empty()) {
         return LatencyStatistics{};
     }
     
-    // Convert deque to vector for existing algorithm
+    // Use precise calculation for large datasets or when fast buffer is inconsistent
     std::vector<double> vec_data(data.begin(), data.end());
     auto stats = calculate_statistics(vec_data);
     
