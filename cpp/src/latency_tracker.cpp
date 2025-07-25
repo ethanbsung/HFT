@@ -85,8 +85,12 @@ LatencyStatistics LatencyTracker::get_statistics(LatencyType type) const {
         return stats;
     }
     
-    // If both data sources are empty, return empty stats
+    // If regular data is empty but we have fast buffer data, use fast path stats
     if (data.empty()) {
+        if (!fast_snapshot.empty()) {
+            auto stats = calculate_statistics_fast(type);
+            return stats;
+        }
         return LatencyStatistics{};
     }
     
