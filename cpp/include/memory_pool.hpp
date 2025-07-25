@@ -192,7 +192,10 @@ private:
 template<typename T>
 MemoryPool<T>::MemoryPool(size_t initial_size, size_t growth_factor)
     : total_allocated_(0), block_size_(initial_size), growth_factor_(growth_factor) {
-    expand_pool(initial_size);
+    // Don't expand with zero size, defer expansion until first acquire()
+    if (initial_size > 0) {
+        expand_pool(initial_size);
+    }
 }
 
 template<typename T>
@@ -205,7 +208,9 @@ T* MemoryPool<T>::acquire() {
     std::lock_guard<std::mutex> lock(mutex_);
     
     if (available_objects_.empty()) {
-        expand_pool(block_size_ * growth_factor_);
+        // Handle case where block_size_ is 0 (zero initial size)
+        size_t expansion_size = (block_size_ == 0) ? growth_factor_ : (block_size_ * growth_factor_);
+        expand_pool(expansion_size);
     }
     
     T* obj = available_objects_.top();

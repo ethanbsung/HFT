@@ -5,6 +5,7 @@
 #include <chrono>
 #include <atomic>
 #include <cstdint>
+#include <queue> // Added for order_queue
 
 namespace hft {
 
@@ -46,13 +47,36 @@ enum class RiskCheckResult : uint8_t {
     CRITICAL_BREACH = 8
 };
 
+// Matching result for order execution
+enum class MatchResult : uint8_t {
+    NO_MATCH = 0,
+    PARTIAL_FILL = 1,
+    FULL_FILL = 2,
+    REJECTED = 3
+};
+
 // Market data structures
 struct PriceLevel {
     price_t price;
     quantity_t quantity;
-    
-    PriceLevel() : price(0.0), quantity(0.0) {}
-    PriceLevel(price_t p, quantity_t q) : price(p), quantity(q) {}
+    quantity_t total_quantity;
+    std::queue<uint64_t> order_queue;  // Queue of order IDs at this price level
+    timestamp_t last_update;
+
+    PriceLevel() : price(0.0), quantity(0.0), total_quantity(0.0), last_update() {}
+    PriceLevel(price_t p, quantity_t q) : price(p), quantity(q), total_quantity(q), last_update() {}
+    PriceLevel(price_t p) : price(p), quantity(0.0), total_quantity(0.0), last_update() {}
+
+    void add_order(uint64_t order_id, quantity_t qty) {
+        order_queue.push(order_id);
+        total_quantity += qty;
+        last_update = std::chrono::high_resolution_clock::now();
+    }
+
+    void remove_order(quantity_t qty) {
+        total_quantity -= qty;
+        last_update = std::chrono::high_resolution_clock::now();
+    }
 };
 
 struct OrderbookSnapshot {
@@ -88,10 +112,22 @@ struct MarketDepth {
     uint32_t depth_levels;
     timestamp_t timestamp;
     
-    MarketDepth(uint32_t levels = 10) : depth_levels(levels), timestamp(now()) {
-        bids.reserve(levels);
-        asks.reserve(levels);
-    }
+    MarketDepth(uint32_t levels = 10);  // Declaration only, definition comes later
+};
+
+/**
+ * Trade execution information
+ */
+struct TradeExecution {
+    uint64_t trade_id;
+    uint64_t aggressor_order_id;
+    uint64_t passive_order_id;
+    price_t price;
+    quantity_t quantity;
+    Side aggressor_side;
+    timestamp_t timestamp;
+    
+    TradeExecution();  // Declaration only, definition comes later
 };
 
 // Order book statistics structure
@@ -111,6 +147,7 @@ struct Order {
     uint64_t order_id;
     Side side;
     price_t price;
+    quantity_t quantity;  // Current order quantity (for immediate use)
     quantity_t original_quantity;
     quantity_t remaining_quantity;
     quantity_t queue_ahead;
@@ -119,7 +156,7 @@ struct Order {
     timestamp_t last_update_time;
     price_t mid_price_at_entry;
     
-    Order() : order_id(0), side(Side::BUY), price(0.0), 
+    Order() : order_id(0), side(Side::BUY), price(0.0), quantity(0.0),
               original_quantity(0.0), remaining_quantity(0.0), 
               queue_ahead(0.0), status(OrderStatus::PENDING),
               mid_price_at_entry(0.0) {}
@@ -185,8 +222,20 @@ inline timestamp_t now() {
     return std::chrono::high_resolution_clock::now();
 }
 
-inline double to_microseconds(const duration_us_t& duration) {
-    return static_cast<double>(duration.count());
+// MarketDepth constructor implementation (after now() is defined)
+inline MarketDepth::MarketDepth(uint32_t levels) : depth_levels(levels), timestamp(now()) {
+    bids.reserve(levels);
+    asks.reserve(levels);
+}
+
+// TradeExecution constructor implementation (after now() is defined)
+inline TradeExecution::TradeExecution() : trade_id(0), aggressor_order_id(0), passive_order_id(0),
+                                          price(0.0), quantity(0.0), aggressor_side(Side::BUY),
+                                          timestamp(now()) {}
+
+template<typename Duration>
+inline double to_microseconds(const Duration& duration) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
 }
 
 inline duration_us_t time_diff_us(timestamp_t start, timestamp_t end) {
@@ -199,6 +248,21 @@ inline std::string side_to_string(Side side) {
 
 inline Side string_to_side(const std::string& side_str) {
     return (side_str == "BUY" || side_str == "buy") ? Side::BUY : Side::SELL;
+}
+
+inline std::string risk_check_result_to_string(RiskCheckResult result) {
+    switch (result) {
+        case RiskCheckResult::APPROVED: return "APPROVED";
+        case RiskCheckResult::POSITION_LIMIT_EXCEEDED: return "POSITION_LIMIT_EXCEEDED";
+        case RiskCheckResult::DAILY_LOSS_LIMIT_EXCEEDED: return "DAILY_LOSS_LIMIT_EXCEEDED";
+        case RiskCheckResult::DRAWDOWN_LIMIT_EXCEEDED: return "DRAWDOWN_LIMIT_EXCEEDED";
+        case RiskCheckResult::CONCENTRATION_RISK: return "CONCENTRATION_RISK";
+        case RiskCheckResult::VAR_LIMIT_EXCEEDED: return "VAR_LIMIT_EXCEEDED";
+        case RiskCheckResult::ORDER_RATE_LIMIT_EXCEEDED: return "ORDER_RATE_LIMIT_EXCEEDED";
+        case RiskCheckResult::LATENCY_LIMIT_EXCEEDED: return "LATENCY_LIMIT_EXCEEDED";
+        case RiskCheckResult::CRITICAL_BREACH: return "CRITICAL_BREACH";
+        default: return "UNKNOWN";
+    }
 }
 
 // Constants

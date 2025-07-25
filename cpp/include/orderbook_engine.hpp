@@ -13,6 +13,7 @@
 #include <queue>
 #include <chrono>
 #include <shared_mutex>
+#include <cmath>  // For std::isnan, std::isinf
 
 namespace hft {
 
@@ -40,42 +41,6 @@ enum class UpdateType : uint8_t {
 };
 
 /**
- * Matching result for order execution
- */
-enum class MatchResult : uint8_t {
-    NO_MATCH = 0,
-    PARTIAL_FILL = 1,
-    FULL_FILL = 2,
-    REJECTED = 3
-};
-
-/**
- * Single price level in the order book
- */
-struct PriceLevel {
-    price_t price;
-    quantity_t total_quantity;
-    std::queue<uint64_t> order_queue;  // Queue of order IDs at this price level
-    timestamp_t last_update;
-    
-    PriceLevel() : price(0), total_quantity(0), last_update(0) {}
-    PriceLevel(price_t p) : price(p), total_quantity(0), last_update(0) {}
-    
-    void add_order(uint64_t order_id, quantity_t quantity) {
-        order_queue.push(order_id);
-        total_quantity += quantity;
-        last_update = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-    }
-    
-    void remove_order(quantity_t quantity) {
-        total_quantity -= quantity;
-        last_update = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::high_resolution_clock::now().time_since_epoch()).count();
-    }
-};
-
-/**
  * Market data snapshot for top-of-book
  */
 struct TopOfBook {
@@ -90,56 +55,6 @@ struct TopOfBook {
     TopOfBook() : bid_price(0.0), bid_quantity(0.0), ask_price(0.0), 
                   ask_quantity(0.0), mid_price(0.0), spread(0.0), 
                   timestamp(now()) {}
-};
-
-/**
- * Market depth information (Level 2 data)
- */
-struct MarketDepth {
-    std::vector<PriceLevel> bids;    // Sorted highest to lowest
-    std::vector<PriceLevel> asks;    // Sorted lowest to highest
-    timestamp_t timestamp;
-    uint32_t depth_levels;
-    
-    MarketDepth(uint32_t levels = 10) : depth_levels(levels), timestamp(now()) {
-        bids.reserve(levels);
-        asks.reserve(levels);
-    }
-};
-
-/**
- * Trade execution information
- */
-struct TradeExecution {
-    uint64_t trade_id;
-    uint64_t aggressor_order_id;
-    uint64_t passive_order_id;
-    price_t price;
-    quantity_t quantity;
-    Side aggressor_side;
-    timestamp_t timestamp;
-    
-    TradeExecution() : trade_id(0), aggressor_order_id(0), passive_order_id(0),
-                       price(0.0), quantity(0.0), aggressor_side(Side::BUY),
-                       timestamp(now()) {}
-};
-
-/**
- * Order book statistics for analytics
- */
-struct OrderBookStats {
-    uint64_t total_orders_processed;
-    uint64_t total_trades;
-    quantity_t total_volume;
-    double avg_spread_bps;
-    double avg_depth_bids;
-    double avg_depth_asks;
-    uint32_t updates_per_second;
-    timestamp_t last_trade_time;
-    
-    OrderBookStats() : total_orders_processed(0), total_trades(0), total_volume(0.0),
-                       avg_spread_bps(0.0), avg_depth_bids(0.0), avg_depth_asks(0.0),
-                       updates_per_second(0), last_trade_time(now()) {}
 };
 
 /**
@@ -302,7 +217,7 @@ public:
     /**
      * Get order processing latency statistics
      */
-    LatencyMetrics get_matching_latency() const;
+    LatencyStatistics get_matching_latency() const;
     
     /**
      * Print performance report
@@ -313,6 +228,11 @@ public:
      * Reset performance counters
      */
     void reset_performance_counters();
+    
+    /**
+     * Clean up cancelled orders set (for memory management)
+     */
+    void cleanup_cancelled_orders();
     
     // Market data integration methods
     void process_market_data_order(const Order& order);
@@ -335,6 +255,17 @@ private:
     // Order tracking
     std::unordered_map<uint64_t, Order> active_orders_;
     
+    // External dependencies (initialized first)
+    MemoryManager& memory_manager_;
+    LatencyTracker& latency_tracker_;
+    OrderManager* order_manager_;
+    
+    // Configuration (initialized early)
+    std::string symbol_;
+    
+    // Trade ID generation (initialized before market state)
+    std::atomic<uint64_t> next_trade_id_;
+    
     // Market state (atomic for lock-free reads)
     std::atomic<price_t> best_bid_;
     std::atomic<price_t> best_ask_;
@@ -346,17 +277,8 @@ private:
     mutable std::mutex book_mutex_;
     mutable std::mutex stats_mutex_;
     
-    // External dependencies
-    MemoryManager& memory_manager_;
-    LatencyTracker& latency_tracker_;
-    OrderManager* order_manager_;
-    
-    // Configuration
-    std::string symbol_;
-    
     // Statistics and monitoring
     OrderBookStats statistics_;
-    std::atomic<uint64_t> next_trade_id_;
     
     // Event callbacks
     BookUpdateCallback book_update_callback_;
@@ -370,6 +292,9 @@ private:
     // Enhanced order tracking per price level
     std::unordered_map<uint64_t, price_t> order_to_price_;  // Order ID -> Price
     std::unordered_map<uint64_t, quantity_t> order_to_quantity_;  // Order ID -> Remaining quantity
+    
+    // Efficient order cancellation tracking (avoids O(n) queue reconstruction)
+    std::unordered_set<uint64_t> cancelled_orders_;  // Track cancelled orders for lazy cleanup
     
     // =========================================================================
     // INTERNAL HELPER FUNCTIONS
@@ -389,6 +314,7 @@ private:
     
     // Market data updates
     void update_top_of_book();
+    void update_best_prices();  // Update cached best bid/ask prices
     void notify_book_update();
     void notify_trade_execution(const TradeExecution& trade);
     void notify_depth_update();
@@ -405,11 +331,23 @@ private:
     // Performance tracking
     void notify_matching_performance(const Order& order, double latency_us);
 
-    // Utility functions
-    BookSide get_book_side(Side order_side) const;
-    Side get_opposite_side(Side side) const;
+    // Utility functions (inlined for performance)
+    inline BookSide get_book_side(Side order_side) const {
+        return (order_side == Side::BUY) ? BookSide::BID : BookSide::ASK;
+    }
+    
+    inline Side get_opposite_side(Side side) const {
+        return (side == Side::BUY) ? Side::SELL : Side::BUY;
+    }
+    
     price_t get_best_price(BookSide side) const;
     quantity_t get_quantity_at_price(BookSide side, price_t price) const;
+
+    // Simple helper methods for book access
+    std::map<price_t, PriceLevel, std::greater<price_t>>& get_bids() { return bids_; }
+    std::map<price_t, PriceLevel, std::less<price_t>>& get_asks() { return asks_; }
+    const std::map<price_t, PriceLevel, std::greater<price_t>>& get_bids() const { return bids_; }
+    const std::map<price_t, PriceLevel, std::less<price_t>>& get_asks() const { return asks_; }
 };
 
 } // namespace hft

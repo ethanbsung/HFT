@@ -49,7 +49,8 @@ enum class RiskViolationType : uint8_t {
     ORDER_RATE_LIMIT = 3,
     CONCENTRATION_RISK = 4,
     VAR_LIMIT = 5,
-    LATENCY_THRESHOLD = 6
+    LATENCY_THRESHOLD = 6,
+    CRITICAL_BREACH = 7
 };
 
 /**
@@ -150,7 +151,7 @@ struct ExecutionStats {
  * Callback function types for order events
  */
 using OrderCallback = std::function<void(const OrderInfo&)>;
-using FillCallback = std::function<void(const OrderInfo&, quantity_t fill_qty, price_t fill_price)>;
+using FillCallback = std::function<void(const OrderInfo&, quantity_t fill_qty, price_t fill_price, bool is_final_fill)>;
 using RiskCallback = std::function<void(RiskViolationType, const std::string& message)>;
 
 /**
@@ -389,13 +390,15 @@ private:
     // **CRITICAL: Track pooled orders for proper memory management**
     std::unordered_map<uint64_t, Order*> pooled_orders_;       // Pointers to pooled orders
 
+    // Position and risk management (frequently accessed) - MOVED UP for init order
+    RiskLimits risk_limits_;
+    
     // Order ID generation (lock-free)
     std::atomic<uint64_t> next_order_id_;
     
-    // Position and risk management (frequently accessed)
+    // Position tracking (frequently accessed)
     mutable std::mutex position_mutex_;
     PositionInfo current_position_;
-    RiskLimits risk_limits_;
     
     // Performance statistics (atomic for lock-free reads)
     mutable std::mutex stats_mutex_;

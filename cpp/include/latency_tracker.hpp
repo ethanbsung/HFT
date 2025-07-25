@@ -4,6 +4,7 @@
 #include <deque>
 #include <vector>
 #include <array>
+#include <atomic>     // For lock-free operations
 #include <algorithm>  // LEARNING: STL algorithms (sort, nth_element)
 #include <numeric>    // LEARNING: Mathematical operations (accumulate)
 #include <string>
@@ -24,7 +25,8 @@ enum class LatencyType : uint8_t {
     ORDER_PLACEMENT = 1,         // Time to place order on exchange
     ORDER_CANCELLATION = 2,      // Time to cancel existing order
     TICK_TO_TRADE = 3,          // Time from price change to trade decision
-    COUNT = 4                    // Total number of types (useful for arrays)
+    ORDER_BOOK_UPDATE = 4,      // Time to update order book
+    COUNT = 5                    // Total number of types (useful for arrays)
 };
 
 /**
@@ -98,6 +100,242 @@ struct LatencyStatistics {
 };
 
 /**
+ * High-performance lock-free circular buffer for latency measurements
+ * Optimized for single-producer, single-consumer scenarios in HFT
+ */
+template<size_t SIZE>
+class LockFreeCircularBuffer {
+private:
+    static_assert((SIZE & (SIZE - 1)) == 0, "SIZE must be a power of 2");
+    static constexpr size_t MASK = SIZE - 1;
+    
+    alignas(64) std::atomic<size_t> head_{0};  // Producer writes here
+    alignas(64) std::atomic<size_t> tail_{0};  // Consumer reads from here
+    alignas(64) std::array<double, SIZE> buffer_;
+    alignas(64) std::atomic<bool> full_{false};
+    
+public:
+    LockFreeCircularBuffer() = default;
+    
+    // Disable copy and move operations due to atomic members
+    LockFreeCircularBuffer(const LockFreeCircularBuffer&) = delete;
+    LockFreeCircularBuffer& operator=(const LockFreeCircularBuffer&) = delete;
+    LockFreeCircularBuffer(LockFreeCircularBuffer&&) = delete;
+    LockFreeCircularBuffer& operator=(LockFreeCircularBuffer&&) = delete;
+    
+    // Fast O(1) insertion - lock-free for single producer
+    inline bool push(double value) noexcept {
+        const size_t current_head = head_.load(std::memory_order_relaxed);
+        const size_t next_head = (current_head + 1) & MASK;
+        
+        if (next_head == tail_.load(std::memory_order_acquire)) {
+            // Buffer is full - overwrite oldest (ring buffer behavior)
+            tail_.store((tail_.load(std::memory_order_relaxed) + 1) & MASK, 
+                       std::memory_order_release);
+            full_.store(true, std::memory_order_relaxed);
+        }
+        
+        buffer_[current_head] = value;
+        head_.store(next_head, std::memory_order_release);
+        return true;
+    }
+    
+    // Get current size - approximate for performance
+    inline size_t size() const noexcept {
+        const size_t h = head_.load(std::memory_order_relaxed);
+        const size_t t = tail_.load(std::memory_order_relaxed);
+        if (h >= t) {
+            return h - t;
+        } else {
+            return SIZE - (t - h);
+        }
+    }
+    
+    // Check if buffer has ever been full (for statistics)
+    inline bool has_been_full() const noexcept {
+        return full_.load(std::memory_order_relaxed);
+    }
+    
+    // Copy data for statistics calculation (thread-safe snapshot)
+    std::vector<double> snapshot() const {
+        std::vector<double> result;
+        const size_t current_tail = tail_.load(std::memory_order_acquire);
+        const size_t current_head = head_.load(std::memory_order_acquire);
+        
+        if (current_head == current_tail) {
+            return result; // Empty
+        }
+        
+        result.reserve(SIZE);
+        size_t pos = current_tail;
+        while (pos != current_head) {
+            result.push_back(buffer_[pos]);
+            pos = (pos + 1) & MASK;
+        }
+        
+        return result;
+    }
+    
+    // Clear the buffer (reset to empty state)
+    inline void clear() noexcept {
+        head_.store(0, std::memory_order_relaxed);
+        tail_.store(0, std::memory_order_relaxed);
+        full_.store(false, std::memory_order_relaxed);
+    }
+    
+    // Fast min/max tracking for hot path
+    inline std::pair<double, double> fast_min_max() const noexcept {
+        double min_val = std::numeric_limits<double>::max();
+        double max_val = std::numeric_limits<double>::lowest();
+        
+        const size_t current_tail = tail_.load(std::memory_order_relaxed);
+        const size_t current_head = head_.load(std::memory_order_relaxed);
+        
+        if (current_head == current_tail) {
+            return {0.0, 0.0}; // Empty
+        }
+        
+        size_t pos = current_tail;
+        while (pos != current_head) {
+            const double val = buffer_[pos];
+            min_val = std::min(min_val, val);
+            max_val = std::max(max_val, val);
+            pos = (pos + 1) & MASK;
+        }
+        
+        return {min_val, max_val};
+    }
+};
+
+/**
+ * Fast approximate percentile calculator using P-Square algorithm
+ * O(1) insertion, O(1) percentile estimation - perfect for HFT
+ */
+class ApproximatePercentile {
+private:
+    static constexpr size_t MARKERS = 5;
+    std::array<double, MARKERS> markers_;    // P-square markers
+    std::array<double, MARKERS> positions_;  // Marker positions
+    std::array<double, MARKERS> desired_;    // Desired positions
+    std::array<double, MARKERS> increments_; // Position increments
+    size_t count_;
+    double percentile_;
+    
+public:
+    explicit ApproximatePercentile(double percentile) 
+        : count_(0), percentile_(percentile) {
+        // Initialize P-square algorithm
+        double p = percentile / 100.0;
+        desired_ = {0.0, p/2.0, p, (1.0+p)/2.0, 1.0};
+        increments_ = {0.0, p/2.0, p, (1.0+p)/2.0, 1.0};
+        positions_ = {0.0, 1.0, 2.0, 3.0, 4.0};
+    }
+    
+    // O(1) update with new measurement
+    inline void update(double value) noexcept {
+        if (count_ < MARKERS) {
+            // Initial phase - collect first 5 values
+            markers_[count_] = value;
+            count_++;
+            if (count_ == MARKERS) {
+                std::sort(markers_.begin(), markers_.end());
+            }
+            return;
+        }
+        
+        // Find cell k
+        size_t k = 0;
+        if (value < markers_[0]) {
+            markers_[0] = value;
+            k = 0;
+        } else if (value >= markers_[MARKERS-1]) {
+            markers_[MARKERS-1] = value;
+            k = MARKERS-2;
+        } else {
+            for (size_t i = 1; i < MARKERS; ++i) {
+                if (value < markers_[i]) {
+                    k = i - 1;
+                    break;
+                }
+            }
+        }
+        
+        // Update positions and desired positions
+        for (size_t i = k+1; i < MARKERS; ++i) {
+            positions_[i] += 1.0;
+        }
+        
+        for (size_t i = 0; i < MARKERS; ++i) {
+            desired_[i] += increments_[i];
+        }
+        
+        // Adjust markers using parabolic formula
+        for (size_t i = 1; i < MARKERS-1; ++i) {
+            double d = desired_[i] - positions_[i];
+            if ((d >= 1.0 && positions_[i+1] - positions_[i] > 1.0) ||
+                (d <= -1.0 && positions_[i-1] - positions_[i] < -1.0)) {
+                
+                int sign = (d >= 0) ? 1 : -1;
+                double new_marker = parabolic_formula(i, sign);
+                
+                if (markers_[i-1] < new_marker && new_marker < markers_[i+1]) {
+                    markers_[i] = new_marker;
+                } else {
+                    markers_[i] = linear_formula(i, sign);
+                }
+                
+                positions_[i] += sign;
+            }
+        }
+        
+        count_++;
+    }
+    
+    // O(1) percentile estimation
+    inline double estimate() const noexcept {
+        if (count_ < MARKERS) {
+            if (count_ == 0) return 0.0;
+            
+            // For small samples, use exact calculation
+            std::vector<double> sorted(markers_.begin(), markers_.begin() + count_);
+            std::sort(sorted.begin(), sorted.end());
+            
+            double index = (percentile_ / 100.0) * (count_ - 1);
+            size_t lower = static_cast<size_t>(index);
+            if (lower >= count_ - 1) return sorted.back();
+            
+            double weight = index - lower;
+            return sorted[lower] * (1.0 - weight) + sorted[lower + 1] * weight;
+        }
+        
+        return markers_[2]; // Middle marker approximates the percentile
+    }
+    
+    inline size_t sample_count() const noexcept { return count_; }
+    
+private:
+    double parabolic_formula(size_t i, int d) const noexcept {
+        double qi_1 = markers_[i-1];
+        double qi = markers_[i];
+        double qi_p1 = markers_[i+1];
+        double ni_1 = positions_[i-1];
+        double ni = positions_[i];
+        double ni_p1 = positions_[i+1];
+        
+        return qi + d * ((ni - ni_1 + d) * (qi_p1 - qi) / (ni_p1 - ni) +
+                        (ni_p1 - ni - d) * (qi - qi_1) / (ni - ni_1)) / (ni_p1 - ni_1);
+    }
+    
+    double linear_formula(size_t i, int d) const noexcept {
+        if (d == 1) {
+            return markers_[i] + (markers_[i+1] - markers_[i]) / (positions_[i+1] - positions_[i]);
+        } else {
+            return markers_[i] - (markers_[i-1] - markers_[i]) / (positions_[i] - positions_[i-1]);
+        }
+    }
+};
+
+/**
  * High-performance time formatting utilities
  * Optimized for minimal overhead in HFT environments
  */
@@ -136,16 +374,16 @@ public:
 /**
  * High-performance latency tracking for HFT systems
  * 
- * LEARNING GOALS:
- * - Understand rolling window data structures
- * - Learn statistical calculations in C++
- * - Practice with STL containers and algorithms
- * - Implement real-time performance monitoring
+ * OPTIMIZATIONS:
+ * - Lock-free circular buffers for hot path operations
+ * - Approximate percentile calculation (O(1) instead of O(n log n))
+ * - Fast path for spike detection only
+ * - Minimal memory allocations
  */
 class LatencyTracker {
 public:
     // LEARNING: constexpr for compile-time constants
-    static constexpr size_t DEFAULT_WINDOW_SIZE = 1000;
+    static constexpr size_t DEFAULT_WINDOW_SIZE = 1024;  // Power of 2 for lock-free buffer
     static constexpr size_t MAX_SPIKE_HISTORY = 100;
     static constexpr size_t TREND_WINDOW_SIZE = 20;  // For trend analysis
     
@@ -173,9 +411,16 @@ public:
     LatencyTracker(LatencyTracker&&) = delete;
     LatencyTracker& operator=(LatencyTracker&&) = delete;
     
-    // Primary interface - add latency measurements
+    // Primary interface - add latency measurements (OPTIMIZED HOT PATH)
     void add_latency(LatencyType type, double latency_us);
     void add_latency(LatencyType type, const duration_us_t& duration);
+    
+    // FAST PATH: Only spike detection, no statistics
+    inline void add_latency_fast_path(LatencyType type, double latency_us) noexcept {
+        // Only do critical operations in hot path
+        fast_buffers_[static_cast<size_t>(type)].push(latency_us);
+        check_and_record_spike_fast(type, latency_us);
+    }
     
     // Convenience methods for common operations
     inline void add_market_data_latency(double latency_us) {
@@ -190,7 +435,7 @@ public:
         add_latency(LatencyType::TICK_TO_TRADE, latency_us);
     }
     
-    // Statistics and reporting
+    // Statistics and reporting (OPTIMIZED)
     LatencyStatistics get_statistics(LatencyType type) const;
     std::vector<LatencySpike> get_recent_spikes(int minutes = 5) const;
     bool should_alert() const;
@@ -209,8 +454,19 @@ public:
     void clear_spike_history();
     
 private:
-    // LEARNING: std::array for fixed-size, cache-friendly storage
-    // Using static_cast to convert enum to array index
+    // Configuration (initialized first)
+    size_t window_size_;
+    timestamp_t session_start_;
+    
+    // Approximate percentile calculators (initialized in constructor)
+    mutable std::array<ApproximatePercentile, static_cast<size_t>(LatencyType::COUNT)> p95_calculators_;
+    mutable std::array<ApproximatePercentile, static_cast<size_t>(LatencyType::COUNT)> p99_calculators_;
+    
+    // HIGH-PERFORMANCE STORAGE: Lock-free circular buffers
+    using FastBuffer = LockFreeCircularBuffer<1024>;
+    std::array<FastBuffer, static_cast<size_t>(LatencyType::COUNT)> fast_buffers_;
+    
+    // Fallback: Keep deques for compatibility and detailed analysis
     std::array<std::deque<double>, static_cast<size_t>(LatencyType::COUNT)> latency_windows_;
     
     // Performance trend tracking for each latency type
@@ -219,16 +475,33 @@ private:
     // LEARNING: std::deque for efficient front/back operations
     std::deque<LatencySpike> spike_history_;
     
-    // Configuration
-    size_t window_size_;
-    timestamp_t session_start_;
-    
     // LEARNING: Helper methods (private implementation details)
-    double get_threshold(LatencyType type, SpikesSeverity severity) const;
+    double get_threshold(LatencyType type, SpikesSeverity severity) const noexcept;
     void check_and_record_spike(LatencyType type, double latency_us);
-    LatencyStatistics calculate_statistics(const std::deque<double>& data) const;
+    inline void check_and_record_spike_fast(LatencyType type, double latency_us) noexcept {
+        // Only check thresholds, don't record detailed spike info in hot path
+        double critical = get_threshold(type, SpikesSeverity::CRITICAL);
+        
+        // Only record critical spikes in fast path to minimize overhead
+        if (latency_us > critical) {
+            // Minimize allocation and operations in hot path
+            LatencySpike spike(now(), type, latency_us, SpikesSeverity::CRITICAL);
+            
+            // Use lock-free push if possible, or minimize lock time
+            if (spike_history_.size() < MAX_SPIKE_HISTORY) {
+                spike_history_.push_back(spike);
+            } else {
+                // Overwrite oldest in ring buffer fashion for performance
+                spike_history_.pop_front();
+                spike_history_.push_back(spike);
+            }
+        }
+    }
+    LatencyStatistics calculate_statistics(const std::vector<double>& data) const;
+    LatencyStatistics calculate_statistics_fast(LatencyType type) const;
     double calculate_percentile(const std::deque<double>& data, double percentile) const;
-    double calculate_standard_deviation(const std::deque<double>& data, double mean) const;
+    double calculate_percentile_fast(const std::vector<double>& data, double percentile) const;
+    double calculate_standard_deviation(const std::vector<double>& data, double mean) const;
     std::string latency_type_to_string(LatencyType type) const;
     std::string severity_to_string(SpikesSeverity severity) const;
     
@@ -272,9 +545,36 @@ private:
     timestamp_t start_time_;
 };
 
+/**
+ * OPTIMIZED: Fast path scoped measurement for hot trading operations
+ */
+class FastScopedLatencyMeasurement {
+public:
+    explicit FastScopedLatencyMeasurement(LatencyTracker& tracker, LatencyType type) noexcept
+        : tracker_(tracker), type_(type), start_time_(now()) {}
+    
+    ~FastScopedLatencyMeasurement() {
+        auto end_time = now();
+        double latency_us = to_microseconds(time_diff_us(start_time_, end_time));
+        tracker_.add_latency_fast_path(type_, latency_us);
+    }
+    
+    FastScopedLatencyMeasurement(const FastScopedLatencyMeasurement&) = delete;
+    FastScopedLatencyMeasurement& operator=(const FastScopedLatencyMeasurement&) = delete;
+    
+private:
+    LatencyTracker& tracker_;
+    LatencyType type_;
+    timestamp_t start_time_;
+};
+
 // LEARNING: Convenience macro for easy scope-based timing
 #define MEASURE_LATENCY(tracker, type) \
     ScopedLatencyMeasurement _measurement(tracker, type)
+
+// OPTIMIZED: Fast path macros for hot trading operations
+#define MEASURE_LATENCY_FAST(tracker, type) \
+    FastScopedLatencyMeasurement _fast_measurement(tracker, type)
 
 // LEARNING: More specific macros for common operations
 #define MEASURE_MARKET_DATA_LATENCY(tracker) \
@@ -285,5 +585,15 @@ private:
 
 #define MEASURE_TICK_TO_TRADE_LATENCY(tracker) \
     MEASURE_LATENCY(tracker, LatencyType::TICK_TO_TRADE)
+
+// OPTIMIZED: Fast path macros for hot operations
+#define MEASURE_MARKET_DATA_LATENCY_FAST(tracker) \
+    MEASURE_LATENCY_FAST(tracker, LatencyType::MARKET_DATA_PROCESSING)
+
+#define MEASURE_ORDER_LATENCY_FAST(tracker) \
+    MEASURE_LATENCY_FAST(tracker, LatencyType::ORDER_PLACEMENT)
+
+#define MEASURE_ORDER_BOOK_UPDATE_FAST(tracker) \
+    MEASURE_LATENCY_FAST(tracker, LatencyType::ORDER_BOOK_UPDATE)
 
 } // namespace hft

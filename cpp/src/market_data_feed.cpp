@@ -423,7 +423,7 @@ void MarketDataFeed::message_processor_thread_main() {
 }
 
 void MarketDataFeed::process_message(const std::string& raw_message) {
-    MEASURE_LATENCY(latency_tracker_, LatencyType::MARKET_DATA_PROCESSING);
+    MEASURE_MARKET_DATA_LATENCY_FAST(latency_tracker_);
     
     // TODO: Parse message type and route to appropriate handler
     auto msg_type = parse_message_type(raw_message);

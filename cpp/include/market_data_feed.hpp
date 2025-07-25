@@ -283,7 +283,7 @@ private:
     
     // Subscribed products
     std::vector<std::string> subscribed_products_;
-    std::mutex products_mutex_;
+    mutable std::mutex products_mutex_;
     
     // Statistics and monitoring
     mutable std::mutex stats_mutex_;

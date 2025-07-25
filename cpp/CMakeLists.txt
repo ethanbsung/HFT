@@ -38,6 +38,7 @@ set(SOURCES
     src/order_manager.cpp
     src/orderbook_engine.cpp
     src/signal_engine.cpp
+    src/market_data_feed.cpp
 )
 
 # Create static library for the HFT core
@@ -54,6 +55,49 @@ set_target_properties(hft_core PROPERTIES
 find_package(Threads REQUIRED)
 target_link_libraries(hft_core PRIVATE Threads::Threads)
 
+# =============================================================================
+# TESTING SETUP
+# =============================================================================
+
+# Find Google Test
+find_package(GTest QUIET)
+if(GTest_FOUND OR GTEST_FOUND)
+    message(STATUS "Google Test found - building unit tests")
+    enable_testing()
+    
+    # Individual component tests (with exceptions enabled for Google Test)
+    add_executable(test_memory tests/test_memory.cpp)
+    target_link_libraries(test_memory PRIVATE hft_core GTest::gtest GTest::gtest_main Threads::Threads)
+    target_compile_options(test_memory PRIVATE -fexceptions -frtti)  # Enable exceptions for tests
+    add_test(NAME MemoryTests COMMAND test_memory)
+    
+    add_executable(test_latency tests/test_latency.cpp)
+    target_link_libraries(test_latency PRIVATE hft_core GTest::gtest GTest::gtest_main Threads::Threads)
+    target_compile_options(test_latency PRIVATE -fexceptions -frtti)  # Enable exceptions for tests
+    add_test(NAME LatencyTests COMMAND test_latency)
+    
+    add_executable(test_order_manager tests/test_order_manager.cpp)
+    target_link_libraries(test_order_manager PRIVATE hft_core GTest::gtest GTest::gtest_main Threads::Threads)
+    target_compile_options(test_order_manager PRIVATE -fexceptions -frtti)  # Enable exceptions for tests
+    add_test(NAME OrderManagerTests COMMAND test_order_manager)
+    
+    # Performance benchmarks
+    add_executable(performance_benchmark tests/performance_benchmark.cpp)
+    target_link_libraries(performance_benchmark PRIVATE hft_core GTest::gtest GTest::gtest_main Threads::Threads)
+    target_compile_options(performance_benchmark PRIVATE -fexceptions -frtti)  # Enable exceptions for tests
+    
+    # Create a test target for running all tests
+    add_custom_target(run_tests
+        COMMAND ${CMAKE_CTEST_COMMAND} --verbose
+        DEPENDS test_memory test_latency test_order_manager
+        COMMENT "Running all unit tests"
+    )
+    
+else()
+    message(STATUS "Google Test not found - skipping unit tests")
+    message(STATUS "Install with: sudo apt-get install libgtest-dev")
+endif()
+
 # Optional: Python bindings (if pybind11 is available)
 find_package(pybind11 QUIET)
 if(pybind11_FOUND)
@@ -67,13 +111,7 @@ else()
     message(STATUS "pybind11 not found - skipping Python bindings")
 endif()
 
-# Example executables for testing
-add_executable(hft_test test/test_main.cpp)
-target_link_libraries(hft_test PRIVATE hft_core)
-
-# Benchmarking executable
-add_executable(hft_benchmark benchmark/benchmark_main.cpp)
-target_link_libraries(hft_benchmark PRIVATE hft_core)
+# Note: Individual test executables are defined in the testing section above
 
 # Install targets
 install(TARGETS hft_core

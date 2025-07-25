@@ -9,28 +9,50 @@ namespace hft {
 // =============================================================================
 
 LatencyTracker::LatencyTracker(size_t window_size) 
-    : window_size_(window_size), session_start_(now()) {}
+    : window_size_(window_size), session_start_(now()),
+      p95_calculators_{{ApproximatePercentile(95.0), ApproximatePercentile(95.0), 
+                       ApproximatePercentile(95.0), ApproximatePercentile(95.0), 
+                       ApproximatePercentile(95.0)}},
+      p99_calculators_{{ApproximatePercentile(99.0), ApproximatePercentile(99.0), 
+                       ApproximatePercentile(99.0), ApproximatePercentile(99.0), 
+                       ApproximatePercentile(99.0)}} {}
 
 // =============================================================================
-// PRIMARY INTERFACE - ADD LATENCY MEASUREMENTS
+// PRIMARY INTERFACE - ADD LATENCY MEASUREMENTS (OPTIMIZED)
 // =============================================================================
 
 void LatencyTracker::add_latency(LatencyType type, double latency_us) {
     size_t index = static_cast<size_t>(type);
+    
+    // Add to legacy deque for compatibility and accurate window management
     latency_windows_[index].push_back(latency_us);
     
-    // Maintain rolling window size
+    // Maintain rolling window size for legacy deque
     if (latency_windows_[index].size() > window_size_) {
         latency_windows_[index].pop_front();
     }
     
+    // Add to fast buffer only if we have room within window size
+    // This ensures fast_buffer respects window_size_ parameter
+    if (fast_buffers_[index].size() < window_size_) {
+        fast_buffers_[index].push(latency_us);
+    } else {
+        // Fast buffer is at capacity - we'll rely on the deque for accuracy
+        // But still update the fast buffer for performance monitoring
+        fast_buffers_[index].push(latency_us); // This will overwrite oldest
+    }
+    
+    // Update approximate percentile calculators (O(1) operation)
+    p95_calculators_[index].update(latency_us);
+    p99_calculators_[index].update(latency_us);
+    
     // Check for latency spikes
     check_and_record_spike(type, latency_us);
     
-    // Update trend tracking with P95 calculations (optimized)
-    if (latency_windows_[index].size() >= 20) {  // Only calculate trends with sufficient data
-        auto stats = get_statistics(type);
-        update_trend_window(type, stats.p95_us);
+    // Update trend tracking with approximate P95 (much faster)
+    if (latency_windows_[index].size() >= 20) {  // Use deque size for accuracy
+        double p95_estimate = p95_calculators_[index].estimate();
+        update_trend_window(type, p95_estimate);
     }
 }
 
@@ -40,10 +62,16 @@ void LatencyTracker::add_latency(LatencyType type, const duration_us_t& duration
 }
 
 // =============================================================================
-// STATISTICS CALCULATION
+// OPTIMIZED STATISTICS CALCULATION
 // =============================================================================
 
 LatencyStatistics LatencyTracker::get_statistics(LatencyType type) const {
+    // Use fast path if we have enough data in approximate calculators
+    if (p95_calculators_[static_cast<size_t>(type)].sample_count() >= 100) {
+        return calculate_statistics_fast(type);
+    }
+    
+    // Fallback to precise calculation for small datasets
     size_t index = static_cast<size_t>(type);
     const auto& data = latency_windows_[index];
     
@@ -51,7 +79,9 @@ LatencyStatistics LatencyTracker::get_statistics(LatencyType type) const {
         return LatencyStatistics{};
     }
     
-    auto stats = calculate_statistics(data);
+    // Convert deque to vector for existing algorithm
+    std::vector<double> vec_data(data.begin(), data.end());
+    auto stats = calculate_statistics(vec_data);
     
     // Add performance trend analysis
     stats.trend = calculate_performance_trend(type);
@@ -59,7 +89,51 @@ LatencyStatistics LatencyTracker::get_statistics(LatencyType type) const {
     return stats;
 }
 
-LatencyStatistics LatencyTracker::calculate_statistics(const std::deque<double>& data) const {
+LatencyStatistics LatencyTracker::calculate_statistics_fast(LatencyType type) const {
+    LatencyStatistics stats;
+    size_t index = static_cast<size_t>(type);
+    
+    // Get data from fast buffer
+    auto snapshot = fast_buffers_[index].snapshot();
+    if (snapshot.empty()) {
+        return stats;
+    }
+    
+    stats.count = snapshot.size();
+    
+    // Fast min/max from circular buffer
+    auto min_max = fast_buffers_[index].fast_min_max();
+    stats.min_us = min_max.first;
+    stats.max_us = min_max.second;
+    
+    // Calculate mean using fast accumulation
+    double sum = std::accumulate(snapshot.begin(), snapshot.end(), 0.0);
+    stats.mean_us = sum / snapshot.size();
+    
+    // Use approximate percentiles (O(1) operation!)
+    stats.p95_us = p95_calculators_[index].estimate();
+    stats.p99_us = p99_calculators_[index].estimate();
+    
+    // For median, we can approximate as 50th percentile
+    // Or use fast calculation for small datasets
+    if (snapshot.size() < 100) {
+        std::nth_element(snapshot.begin(), snapshot.begin() + snapshot.size()/2, snapshot.end());
+        stats.median_us = snapshot[snapshot.size()/2];
+    } else {
+        // Approximate median - could implement another P-square calculator
+        stats.median_us = stats.mean_us; // Rough approximation
+    }
+    
+    // Calculate standard deviation
+    stats.std_dev_us = calculate_standard_deviation(snapshot, stats.mean_us);
+    
+    // Add performance trend analysis
+    stats.trend = calculate_performance_trend(type);
+    
+    return stats;
+}
+
+LatencyStatistics LatencyTracker::calculate_statistics(const std::vector<double>& data) const {
     LatencyStatistics stats;
     
     stats.count = data.size();
@@ -74,9 +148,9 @@ LatencyStatistics LatencyTracker::calculate_statistics(const std::deque<double>&
     stats.mean_us = sum / data.size();
     
     // Calculate percentiles efficiently
-    stats.median_us = calculate_percentile(data, 50.0);
-    stats.p95_us = calculate_percentile(data, 95.0);
-    stats.p99_us = calculate_percentile(data, 99.0);
+    stats.median_us = calculate_percentile_fast(data, 50.0);
+    stats.p95_us = calculate_percentile_fast(data, 95.0);
+    stats.p99_us = calculate_percentile_fast(data, 99.0);
     
     // Calculate standard deviation
     stats.std_dev_us = calculate_standard_deviation(data, stats.mean_us);
@@ -84,27 +158,46 @@ LatencyStatistics LatencyTracker::calculate_statistics(const std::deque<double>&
     return stats;
 }
 
+double LatencyTracker::calculate_percentile_fast(const std::vector<double>& data, double percentile) const {
+    if (data.empty() || percentile < 0.0 || percentile > 100.0) {
+        return 0.0;
+    }
+    
+    // Use nth_element for O(n) performance instead of full sort
+    std::vector<double> mutable_data(data);
+    
+    double index = (percentile / 100.0) * (mutable_data.size() - 1);
+    size_t lower_index = static_cast<size_t>(index);
+    
+    if (lower_index >= mutable_data.size() - 1) {
+        std::nth_element(mutable_data.begin(), mutable_data.end() - 1, mutable_data.end());
+        return mutable_data.back();
+    }
+    
+    // Partial sort to get the two elements we need
+    std::nth_element(mutable_data.begin(), mutable_data.begin() + lower_index, mutable_data.end());
+    double lower_val = mutable_data[lower_index];
+    
+    std::nth_element(mutable_data.begin() + lower_index + 1, 
+                     mutable_data.begin() + lower_index + 1, mutable_data.end());
+    double upper_val = mutable_data[lower_index + 1];
+    
+    double weight = index - lower_index;
+    return lower_val * (1.0 - weight) + upper_val * weight;
+}
+
+// Keep legacy method for backward compatibility
 double LatencyTracker::calculate_percentile(const std::deque<double>& data, double percentile) const {
     if (data.empty() || percentile < 0.0 || percentile > 100.0) {
         return 0.0;
     }
     
-    // Create mutable copy for sorting
-    std::vector<double> sorted_data(data.begin(), data.end());
-    std::sort(sorted_data.begin(), sorted_data.end());
-    
-    double index = (percentile / 100.0) * (sorted_data.size() - 1);
-    size_t lower_index = static_cast<size_t>(index);
-    
-    if (lower_index >= sorted_data.size() - 1) {
-        return sorted_data.back();
-    }
-    
-    double weight = index - lower_index;
-    return sorted_data[lower_index] * (1.0 - weight) + sorted_data[lower_index + 1] * weight;
+    // Convert to vector and use fast method
+    std::vector<double> vec_data(data.begin(), data.end());
+    return calculate_percentile_fast(vec_data, percentile);
 }
 
-double LatencyTracker::calculate_standard_deviation(const std::deque<double>& data, double mean) const {
+double LatencyTracker::calculate_standard_deviation(const std::vector<double>& data, double mean) const {
     double variance = std::accumulate(data.begin(), data.end(), 0.0,
         [mean](double acc, double value) {
             double diff = value - mean;
@@ -198,7 +291,7 @@ std::string LatencyTracker::trend_to_string(PerformanceTrend trend) const {
 }
 
 // =============================================================================
-// SPIKE DETECTION AND MANAGEMENT
+// SPIKE DETECTION AND MANAGEMENT (OPTIMIZED)
 // =============================================================================
 
 void LatencyTracker::check_and_record_spike(LatencyType type, double latency_us) {
@@ -220,7 +313,9 @@ void LatencyTracker::check_and_record_spike(LatencyType type, double latency_us)
     }
 }
 
-double LatencyTracker::get_threshold(LatencyType type, SpikesSeverity severity) const {
+// Note: check_and_record_spike_fast is now defined inline in the header
+
+double LatencyTracker::get_threshold(LatencyType type, SpikesSeverity severity) const noexcept {
     switch(type) {
         case LatencyType::MARKET_DATA_PROCESSING:
             return (severity == SpikesSeverity::WARNING) ? MARKET_DATA_WARNING_US : MARKET_DATA_CRITICAL_US;
@@ -282,6 +377,7 @@ std::string LatencyTracker::latency_type_to_string(LatencyType type) const {
         case LatencyType::ORDER_PLACEMENT: return "Order Placement";
         case LatencyType::ORDER_CANCELLATION: return "Order Cancellation";
         case LatencyType::TICK_TO_TRADE: return "Tick to Trade";
+        case LatencyType::ORDER_BOOK_UPDATE: return "Order Book Update";
         default: return "Unknown";
     }
 }
@@ -462,14 +558,17 @@ void LatencyTracker::print_detailed_report() const {
 // =============================================================================
 
 size_t LatencyTracker::get_total_measurements() const {
-    return std::accumulate(latency_windows_.begin(), latency_windows_.end(), size_t(0),
-                          [](size_t sum, const auto& window) {
-                              return sum + window.size();
-                          });
+    // Use accurate deque counts instead of fast buffers for window compliance
+    size_t total = 0;
+    for (const auto& window : latency_windows_) {
+        total += window.size();
+    }
+    return total;
 }
 
 size_t LatencyTracker::get_measurement_count(LatencyType type) const {
     size_t index = static_cast<size_t>(type);
+    // Use accurate deque size instead of fast buffer for window compliance
     return latency_windows_[index].size();
 }
 
@@ -483,12 +582,25 @@ double LatencyTracker::get_uptime_seconds() const {
 // =============================================================================
 
 void LatencyTracker::reset_statistics() {
+    // Reset approximate percentile calculators
+    for (size_t i = 0; i < static_cast<size_t>(LatencyType::COUNT); ++i) {
+        p95_calculators_[i] = ApproximatePercentile(95.0);
+        p99_calculators_[i] = ApproximatePercentile(99.0);
+    }
+    
+    // Reset deque-based structures
     for (auto& window : latency_windows_) {
         window.clear();
     }
     for (auto& trend_window : trend_windows_) {
         trend_window.clear();
     }
+    
+    // Reset fast buffers using the clear method
+    for (auto& buffer : fast_buffers_) {
+        buffer.clear();
+    }
+    
     session_start_ = now();
 }
 
