@@ -4,7 +4,6 @@
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-blue.svg)](https://isocpp.org/)
 [![CMake](https://img.shields.io/badge/CMake-3.16+-green.svg)](https://cmake.org/)
 [![Google Test](https://img.shields.io/badge/Tests-Google%20Test-green.svg)](https://github.com/google/googletest)
-[![Production Ready](https://img.shields.io/badge/Status-Production%20Ready-brightgreen.svg)](#performance-achievements)
 
 ## 🚀 Overview
 
