@@ -13,6 +13,10 @@
 #include <mutex>
 #include <condition_variable>
 
+// Forward declarations for WebSocket
+#include <websocketpp/config/asio_client.hpp>
+#include <websocketpp/client.hpp>
+
 namespace hft {
 
 /**
@@ -24,7 +28,8 @@ enum class ConnectionState : uint8_t {
     CONNECTED = 2,
     SUBSCRIBED = 3,
     ERROR = 4,
-    RECONNECTING = 5
+    RECONNECTING = 5,
+    DISCONNECTING = 6
 };
 
 /**
@@ -298,6 +303,9 @@ private:
     // WebSocket connection handle (implementation-specific)
     void* websocket_handle_;  // Will be cast to actual WebSocket library type
     
+    // WebSocket connection handle for managing active connections
+    websocketpp::connection_hdl connection_hdl_;
+    
     // =========================================================================
     // INTERNAL IMPLEMENTATION FUNCTIONS
     // =========================================================================
@@ -352,6 +360,7 @@ private:
     // Utility functions
     std::string create_subscription_json() const;
     std::string create_auth_signature(const std::string& message) const;
+    std::string create_hmac_signature(const std::string& message, const std::string& secret) const;
     bool validate_message(const std::string& message) const;
     void log_message(const std::string& level, const std::string& message) const;
 };
@@ -362,5 +371,20 @@ private:
 std::unique_ptr<MarketDataFeed> create_coinbase_feed(OrderBookEngine& order_book,
                                                     LatencyTracker& latency_tracker,
                                                     const std::string& product_id = "BTC-USD");
+
+// =============================================================================
+// BTC-USD SPECIFIC CONFIGURATION
+// =============================================================================
+
+/**
+ * Create a configuration specifically for BTC-USD trade and orderbook data
+ */
+MarketDataConfig create_btcusd_config();
+
+/**
+ * Create a market data feed configured for BTC-USD only
+ */
+std::unique_ptr<MarketDataFeed> create_btcusd_feed(OrderBookEngine& order_book,
+                                                   LatencyTracker& latency_tracker);
 
 } // namespace hft 

@@ -7,7 +7,10 @@ CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic
 
 # Performance optimizations for HFT
 RELEASE_FLAGS = -O3 -DNDEBUG -march=native -mtune=native -ffast-math -funroll-loops -flto
-RELEASE_FLAGS += -fno-exceptions -fno-rtti  # Disable for maximum performance
+RELEASE_FLAGS += -fno-rtti  # Disable RTTI for performance (keeping exceptions for WebSocket)
+
+# Libraries to link for WebSocket support
+WEBSOCKET_LIBS = -lboost_system -lssl -lcrypto
 
 # Debug flags
 DEBUG_FLAGS = -g -O0 -DDEBUG -fsanitize=address
@@ -33,7 +36,13 @@ BENCHMARK_EXEC = $(BINDIR)/hft_benchmark
 INCLUDES = -I$(INCDIR)
 
 # Libraries to link
-LIBS = -pthread
+LIBS = -pthread $(WEBSOCKET_LIBS)
+
+# Test configuration
+TESTDIR = tests
+TEST_SOURCES = $(wildcard $(TESTDIR)/*.cpp)
+TEST_OBJECTS = $(TEST_SOURCES:$(TESTDIR)/%.cpp=$(OBJDIR)/test_%.o)
+GTEST_LIBS = -lgtest -lgtest_main -lgmock
 
 # Default target
 .PHONY: all clean debug release test benchmark install
@@ -67,11 +76,27 @@ $(LIBRARY): $(OBJECTS) | $(LIBDIR)
 	ar rcs $@ $^
 	ranlib $@
 
-# Test executable
-test: $(TEST_EXEC)
+# Test objects compilation
+$(OBJDIR)/test_%.o: $(TESTDIR)/%.cpp $(HEADERS) | $(OBJDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
-$(TEST_EXEC): test/test_main.cpp $(LIBRARY) | $(BINDIR)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) -o $@
+# Test executables
+test: test_data_feed test_orderbook test_latency
+
+# Data feed tests
+test_data_feed: $(BINDIR)/test_data_feed
+$(BINDIR)/test_data_feed: $(OBJDIR)/test_data_feed.o $(LIBRARY) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
+
+# OrderBook tests
+test_orderbook: $(BINDIR)/test_orderbook_engine
+$(BINDIR)/test_orderbook_engine: $(OBJDIR)/test_orderbook_engine.o $(LIBRARY) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
+
+# Latency tracker tests
+test_latency: $(BINDIR)/test_latency_tracker
+$(BINDIR)/test_latency_tracker: $(OBJDIR)/test_latency_tracker.o $(LIBRARY) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
 
 # Benchmark executable
 benchmark: $(BENCHMARK_EXEC)
@@ -150,10 +175,23 @@ stats: $(OBJECTS)
 # Quick test runner (when test files exist)
 check: test
 	@echo "Running HFT system tests..."
-	@if [ -f $(TEST_EXEC) ]; then \
-		$(TEST_EXEC); \
+	@echo "Running market data feed tests..."
+	@if [ -f $(BINDIR)/test_data_feed ]; then \
+		$(BINDIR)/test_data_feed; \
 	else \
-		echo "Test executable not found. Run 'make test' first."; \
+		echo "Data feed test executable not found."; \
+	fi
+	@echo "Running orderbook engine tests..."
+	@if [ -f $(BINDIR)/test_orderbook_engine ]; then \
+		$(BINDIR)/test_orderbook_engine; \
+	else \
+		echo "OrderBook test executable not found."; \
+	fi
+	@echo "Running latency tracker tests..."
+	@if [ -f $(BINDIR)/test_latency_tracker ]; then \
+		$(BINDIR)/test_latency_tracker; \
+	else \
+		echo "Latency tracker test executable not found."; \
 	fi
 
 # Benchmark runner
