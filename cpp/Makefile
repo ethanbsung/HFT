@@ -33,7 +33,7 @@ BENCHMARK_EXEC = $(BINDIR)/hft_benchmark
 INCLUDES = -I$(INCDIR)
 
 # Libraries to link
-LIBS = -pthread
+LIBS = -pthread -lssl -lcrypto
 
 # Default target
 .PHONY: all clean debug release test benchmark install

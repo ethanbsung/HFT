@@ -55,6 +55,15 @@ set_target_properties(hft_core PROPERTIES
 find_package(Threads REQUIRED)
 target_link_libraries(hft_core PRIVATE Threads::Threads)
 
+# OpenSSL for authenticated websocket connections
+find_package(OpenSSL)
+if(OpenSSL_FOUND)
+    target_link_libraries(hft_core PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+    message(STATUS "OpenSSL found - enabling secure WebSocket support")
+else()
+    message(WARNING "OpenSSL not found - WebSocket connections may fail to link")
+endif()
+
 # =============================================================================
 # TESTING SETUP
 # =============================================================================
