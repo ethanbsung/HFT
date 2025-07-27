@@ -12,10 +12,10 @@ LatencyTracker::LatencyTracker(size_t window_size)
     : window_size_(window_size), session_start_(now()),
       p95_calculators_{{ApproximatePercentile(95.0), ApproximatePercentile(95.0), 
                        ApproximatePercentile(95.0), ApproximatePercentile(95.0), 
-                       ApproximatePercentile(95.0)}},
+                       ApproximatePercentile(95.0), ApproximatePercentile(95.0)}},
       p99_calculators_{{ApproximatePercentile(99.0), ApproximatePercentile(99.0), 
                        ApproximatePercentile(99.0), ApproximatePercentile(99.0), 
-                       ApproximatePercentile(99.0)}} {}
+                       ApproximatePercentile(99.0), ApproximatePercentile(99.0)}} {}
 
 // =============================================================================
 // PRIMARY INTERFACE - ADD LATENCY MEASUREMENTS (OPTIMIZED)

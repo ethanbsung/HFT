@@ -26,7 +26,8 @@ enum class LatencyType : uint8_t {
     ORDER_CANCELLATION = 2,      // Time to cancel existing order
     TICK_TO_TRADE = 3,          // Time from price change to trade decision
     ORDER_BOOK_UPDATE = 4,      // Time to update order book
-    COUNT = 5                    // Total number of types (useful for arrays)
+    TRADE_EXECUTION_PROCESSING = 5, // Time to process trade execution
+    COUNT = 6                    // Total number of types (useful for arrays)
 };
 
 /**
