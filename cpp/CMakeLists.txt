@@ -86,6 +86,9 @@ set_target_properties(hft_core PROPERTIES
     POSITION_INDEPENDENT_CODE ON
 )
 
+# Enable exception handling for WebSocket support
+target_compile_options(hft_core PRIVATE -fexceptions -frtti)
+
 # Thread support for concurrent operations
 find_package(Threads REQUIRED)
 target_link_libraries(hft_core PRIVATE Threads::Threads)
