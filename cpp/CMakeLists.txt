@@ -31,6 +31,41 @@ endif()
 # Include directories
 include_directories(include)
 
+# Examples subdirectory removed - no longer needed
+
+# Simple WebSocket test
+add_executable(websocket_test websocket_test.cpp)
+
+# Link with required libraries
+target_link_libraries(websocket_test 
+    PRIVATE 
+    websocketpp::websocketpp
+    nlohmann_json::nlohmann_json
+    OpenSSL::SSL 
+    OpenSSL::Crypto
+    Threads::Threads
+)
+
+# Set C++ standard
+target_compile_features(websocket_test PRIVATE cxx_std_17)
+
+# Include directories
+target_include_directories(websocket_test PRIVATE 
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+# Compiler flags
+target_compile_options(websocket_test PRIVATE 
+    -Wall -Wextra
+    -fexceptions  # Enable exceptions for this example
+    -frtti        # Enable RTTI for this example
+)
+
+# Set output directory
+set_target_properties(websocket_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+)
+
 # Source files
 set(SOURCES
     src/memory_pool.cpp
@@ -62,6 +97,22 @@ if(OpenSSL_FOUND)
     message(STATUS "OpenSSL found - enabling secure WebSocket support")
 else()
     message(WARNING "OpenSSL not found - WebSocket connections may fail to link")
+endif()
+
+# Find nlohmann/json
+find_package(nlohmann_json QUIET)
+if(nlohmann_json_FOUND)
+    message(STATUS "nlohmann/json found")
+else()
+    message(STATUS "nlohmann/json not found - will use bundled version if available")
+endif()
+
+# Find websocketpp
+find_package(websocketpp QUIET)
+if(websocketpp_FOUND)
+    message(STATUS "websocketpp found")
+else()
+    message(STATUS "websocketpp not found - will use bundled version if available")
 endif()
 
 # =============================================================================

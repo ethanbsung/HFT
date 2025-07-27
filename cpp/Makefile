@@ -77,7 +77,7 @@ $(LIBRARY): $(OBJECTS) | $(LIBDIR)
 	ranlib $@
 
 # Test objects compilation
-$(OBJDIR)/test_%.o: $(TESTDIR)/%.cpp $(HEADERS) | $(OBJDIR)
+$(OBJDIR)/test_%.o: $(TESTDIR)/test_%.cpp $(HEADERS) | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # Test executables

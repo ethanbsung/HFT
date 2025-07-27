@@ -17,6 +17,9 @@
 #include <websocketpp/config/asio_client.hpp>
 #include <websocketpp/client.hpp>
 
+// Sodium for JWT authentication
+#include <sodium.h>
+
 namespace hft {
 
 /**
@@ -279,12 +282,6 @@ private:
     
     // Threading
     std::unique_ptr<std::thread> websocket_thread_;
-    std::unique_ptr<std::thread> message_processor_thread_;
-    
-    // Message queue for decoupling network I/O from processing
-    std::queue<std::string> message_queue_;
-    std::mutex queue_mutex_;
-    std::condition_variable queue_cv_;
     
     // Subscribed products
     std::vector<std::string> subscribed_products_;
@@ -306,6 +303,10 @@ private:
     // WebSocket connection handle for managing active connections
     websocketpp::connection_hdl connection_hdl_;
     
+    // JWT authentication
+    unsigned char secret_key_[crypto_sign_SECRETKEYBYTES];
+    unsigned char public_key_[crypto_sign_PUBLICKEYBYTES];
+    
     // =========================================================================
     // INTERNAL IMPLEMENTATION FUNCTIONS
     // =========================================================================
@@ -314,15 +315,12 @@ private:
     bool establish_connection();
     void close_connection();
     void websocket_thread_main();
-    void handle_connection_error(const std::string& error);
     
     // Subscription management
-    void send_subscription_message();
-    void send_unsubscription_message(const std::string& product_id);
-    bool send_websocket_message(const std::string& message);
+    void send_subscriptions(websocketpp::connection_hdl hdl);
+    void start_jwt_refresh_timer(websocketpp::connection_hdl hdl);
     
     // Message processing
-    void message_processor_thread_main();
     void process_message(const std::string& raw_message);
     void handle_trade_message(const std::string& message);
     void handle_book_message(const std::string& message);
@@ -334,19 +332,12 @@ private:
     CoinbaseTradeMessage parse_trade_message(const std::string& message);
     CoinbaseBookMessage parse_book_message(const std::string& message);
     
-    // Data conversion
-    price_t parse_price(const std::string& price_str);
-    quantity_t parse_quantity(const std::string& qty_str);
-    Side parse_side(const std::string& side_str);
-    timestamp_t parse_timestamp(const std::string& time_str);
-    
     // Integration with OrderBookEngine
     void update_order_book_from_trade(const CoinbaseTradeMessage& trade);
     void update_order_book_from_snapshot(const CoinbaseBookMessage& book);
     void update_order_book_from_l2update(const CoinbaseBookMessage& book);
     
     // Performance tracking
-    void track_message_latency(timestamp_t message_time);
     void update_statistics(CoinbaseMessageType msg_type);
     
     // Reconnection logic
