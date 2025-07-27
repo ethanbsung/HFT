@@ -17,8 +17,10 @@
 #include <websocketpp/config/asio_client.hpp>
 #include <websocketpp/client.hpp>
 
-// Sodium for JWT authentication
-#include <sodium.h>
+// JSON library
+#include <nlohmann/json.hpp>
+
+// Sodium removed for HFT optimization
 
 namespace hft {
 
@@ -85,46 +87,34 @@ struct CoinbaseBookMessage {
 };
 
 /**
- * Market data statistics
+ * Market data statistics (simplified for HFT)
  */
 struct MarketDataStats {
-    uint64_t messages_received;
     uint64_t messages_processed;
-    uint64_t messages_dropped;
-    uint64_t reconnection_count;
     uint64_t trades_processed;
     uint64_t book_updates_processed;
-    double avg_latency_us;
     timestamp_t last_message_time;
-    timestamp_t connection_start_time;
     
-    MarketDataStats() : messages_received(0), messages_processed(0), 
-                       messages_dropped(0), reconnection_count(0),
-                       trades_processed(0), book_updates_processed(0),
-                       avg_latency_us(0.0), last_message_time(now()),
-                       connection_start_time(now()) {}
+    MarketDataStats() : messages_processed(0), trades_processed(0), 
+                       book_updates_processed(0), last_message_time(now()) {}
 };
 
 /**
- * Configuration for market data feed
+ * Configuration for market data feed (optimized for HFT)
  */
 struct MarketDataConfig {
     std::string coinbase_api_key;
     std::string coinbase_api_secret;
-    std::string websocket_url = "wss://ws-feed.exchange.coinbase.com";
+    std::string websocket_url = "wss://advanced-trade-ws.coinbase.com";
     std::string product_id = "BTC-USD";
     
-    // Subscription options
-    bool subscribe_to_heartbeat = true;
-    bool subscribe_to_ticker = false;
+    // Subscription options (simplified)
     bool subscribe_to_level2 = true;
     bool subscribe_to_matches = true;
     
-    // Performance settings
-    uint32_t message_queue_size = 10000;
-    uint32_t reconnect_delay_ms = 5000;
-    uint32_t heartbeat_timeout_ms = 30000;
-    bool enable_message_compression = true;
+    // Performance settings (optimized)
+    uint32_t reconnect_delay_ms = 1000;  // Faster reconnection for HFT
+    uint32_t message_queue_size = 1000;  // Message queue size for buffering
     
     MarketDataConfig() = default;
 };
@@ -303,9 +293,7 @@ private:
     // WebSocket connection handle for managing active connections
     websocketpp::connection_hdl connection_hdl_;
     
-    // JWT authentication
-    unsigned char secret_key_[crypto_sign_SECRETKEYBYTES];
-    unsigned char public_key_[crypto_sign_PUBLICKEYBYTES];
+    // JWT authentication removed for HFT optimization
     
     // =========================================================================
     // INTERNAL IMPLEMENTATION FUNCTIONS
@@ -326,6 +314,13 @@ private:
     void handle_book_message(const std::string& message);
     void handle_heartbeat_message(const std::string& message);
     void handle_error_message(const std::string& message);
+    
+    // OPTIMIZED: Fast path methods for HFT
+    void process_message_fast(const std::string& raw_message);
+    void process_trade_fast(const nlohmann::json& event);
+    void process_book_update_fast(const nlohmann::json& event);
+    void update_order_book_from_trade_fast(double price, double size, Side side);
+    void update_order_book_from_l2update_fast(Side side, double price, double size);
     
     // Message parsing
     CoinbaseMessageType parse_message_type(const std::string& message);

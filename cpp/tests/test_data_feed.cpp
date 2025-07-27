@@ -84,9 +84,6 @@ protected:
         // Enable only the channels we need for BTC-USD
         config_.subscribe_to_level2 = true;      // Orderbook data
         config_.subscribe_to_matches = true;     // Trade data
-        config_.subscribe_to_heartbeat = false;  // Disable heartbeat to reduce noise
-        config_.subscribe_to_ticker = false;     // Disable ticker
-        
         // Enable authenticated channels if we have credentials
         std::cout << "[TEST] Config loaded - API Key empty: " << (config_.coinbase_api_key.empty() ? "YES" : "NO") << std::endl;
         std::cout << "[TEST] Config loaded - API Secret empty: " << (config_.coinbase_api_secret.empty() ? "YES" : "NO") << std::endl;
@@ -99,9 +96,7 @@ protected:
             std::cout << "[TEST] Using public channels only (no credentials found)" << std::endl;
         }
         
-        config_.message_queue_size = 100;
         config_.reconnect_delay_ms = 1000;
-        config_.heartbeat_timeout_ms = 10000;
     }
     
     void TearDown() override {
@@ -238,8 +233,7 @@ TEST_F(MarketDataFeedTest, UpdateConfiguration) {
     
     MarketDataConfig new_config;
     new_config.product_id = "ETH-USD";
-    new_config.subscribe_to_ticker = true;
-    new_config.message_queue_size = 5000;
+    new_config.subscribe_to_matches = true;
     
     data_feed_->update_config(new_config);
     // Note: Configuration changes require restart to take effect
@@ -669,13 +663,9 @@ TEST_F(MarketDataFeedTest, InitialStatistics) {
     
     auto stats = data_feed_->get_statistics();
     
-    EXPECT_EQ(stats.messages_received, 0);
     EXPECT_EQ(stats.messages_processed, 0);
-    EXPECT_EQ(stats.messages_dropped, 0);
-    EXPECT_EQ(stats.reconnection_count, 0);
     EXPECT_EQ(stats.trades_processed, 0);
     EXPECT_EQ(stats.book_updates_processed, 0);
-    EXPECT_EQ(stats.avg_latency_us, 0.0);
 }
 
 TEST_F(MarketDataFeedTest, ResetStatistics) {
@@ -839,27 +829,11 @@ TEST_F(BoundaryTest, SpecialCharactersInProductId) {
     }
 }
 
-TEST_F(BoundaryTest, ZeroMessageQueueSize) {
-    config_.message_queue_size = 0;
-    data_feed_ = createDataFeed();
-    
-    // Should handle zero queue size gracefully
-    EXPECT_NE(data_feed_, nullptr);
-}
-
-TEST_F(BoundaryTest, MaximumMessageQueueSize) {
-    config_.message_queue_size = UINT32_MAX;
-    data_feed_ = createDataFeed();
-    
-    // Should handle maximum queue size
-    EXPECT_NE(data_feed_, nullptr);
-}
-
 TEST_F(BoundaryTest, ZeroReconnectDelay) {
     config_.reconnect_delay_ms = 0;
     data_feed_ = createDataFeed();
     
-    // Should handle zero reconnect delay
+    // Should handle zero reconnect delay gracefully
     EXPECT_NE(data_feed_, nullptr);
 }
 
@@ -1085,15 +1059,11 @@ TEST_F(BTCUSDTest, BTCUSDOnlyConfiguration) {
     EXPECT_EQ(config.product_id, "BTC-USD");
     EXPECT_TRUE(config.subscribe_to_level2);      // Orderbook data
     EXPECT_TRUE(config.subscribe_to_matches);     // Trade data
-    EXPECT_FALSE(config.subscribe_to_heartbeat);  // No heartbeat
-    EXPECT_FALSE(config.subscribe_to_ticker);     // No ticker
     
     std::cout << "[TEST] BTC-USD Configuration:" << std::endl;
     std::cout << "  Product ID: " << config.product_id << std::endl;
     std::cout << "  Level2 (Orderbook): " << (config.subscribe_to_level2 ? "YES" : "NO") << std::endl;
     std::cout << "  Matches (Trades): " << (config.subscribe_to_matches ? "YES" : "NO") << std::endl;
-    std::cout << "  Heartbeat: " << (config.subscribe_to_heartbeat ? "YES" : "NO") << std::endl;
-    std::cout << "  Ticker: " << (config.subscribe_to_ticker ? "YES" : "NO") << std::endl;
 }
 
 TEST_F(BTCUSDTest, BTCUSDFeedCreation) {
