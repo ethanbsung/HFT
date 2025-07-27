@@ -36,13 +36,13 @@ BENCHMARK_EXEC = $(BINDIR)/hft_benchmark
 INCLUDES = -I$(INCDIR)
 
 # Libraries to link
-LIBS = -pthread $(WEBSOCKET_LIBS)
+LIBS = -pthread $(WEBSOCKET_LIBS) -lsodium
 
 # Test configuration
 TESTDIR = tests
 TEST_SOURCES = $(wildcard $(TESTDIR)/*.cpp)
 TEST_OBJECTS = $(TEST_SOURCES:$(TESTDIR)/%.cpp=$(OBJDIR)/test_%.o)
-GTEST_LIBS = -lgtest -lgtest_main -lgmock
+GTEST_LIBS = -lgtest -lgtest_main
 
 # Default target
 .PHONY: all clean debug release test benchmark install

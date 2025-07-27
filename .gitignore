@@ -143,3 +143,8 @@ test_latency
 test_memory
 test_orderbook_engine
 test_order_manager
+data
+a.out
+coinbase_test
+examples/
+test_data_feed

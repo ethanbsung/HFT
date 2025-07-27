@@ -732,29 +732,67 @@ void MarketDataFeed::start_jwt_refresh_timer(websocketpp::connection_hdl hdl) {
 void MarketDataFeed::process_message(const std::string& raw_message) {
     MEASURE_MARKET_DATA_LATENCY_FAST(latency_tracker_);
     
-    // Parse message type and route to appropriate handler
-    auto msg_type = parse_message_type(raw_message);
-    
-    switch (msg_type) {
-        case CoinbaseMessageType::MATCH:
-            handle_trade_message(raw_message);
-            break;
-        case CoinbaseMessageType::SNAPSHOT:
-        case CoinbaseMessageType::L2UPDATE:
-            handle_book_message(raw_message);
-            break;
-        case CoinbaseMessageType::HEARTBEAT:
-            handle_heartbeat_message(raw_message);
-            break;
-        case CoinbaseMessageType::ERROR_MSG:
-            handle_error_message(raw_message);
-            break;
-        default:
-            // Unknown message type - log and ignore
-            break;
+    // Update received message count
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        statistics_.messages_received++;
     }
     
-    update_statistics(msg_type);
+    try {
+        auto json = nlohmann::json::parse(raw_message);
+        
+        // Handle new Advanced Trade format
+        if (json.contains("channel") && json.contains("events")) {
+            std::string channel = json["channel"].get<std::string>();
+            
+            if (channel == "market_trades") {
+                handle_trade_message(raw_message);
+            } else if (channel == "l2_data") {
+                handle_book_message(raw_message);
+            } else if (channel == "ticker") {
+                // Handle ticker messages if needed
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                statistics_.messages_processed++;
+            } else if (channel == "subscriptions") {
+                // Handle subscription confirmations
+                std::lock_guard<std::mutex> lock(stats_mutex_);
+                statistics_.messages_processed++;
+            } else {
+                // Unknown channel - log and ignore
+                std::cout << "[MARKET DATA] Unknown channel: " << channel << std::endl;
+            }
+            
+            update_statistics(CoinbaseMessageType::UNKNOWN);
+            return;
+        }
+        
+        // Fallback to old format parsing
+        auto msg_type = parse_message_type(raw_message);
+        
+        switch (msg_type) {
+            case CoinbaseMessageType::MATCH:
+                handle_trade_message(raw_message);
+                break;
+            case CoinbaseMessageType::SNAPSHOT:
+            case CoinbaseMessageType::L2UPDATE:
+                handle_book_message(raw_message);
+                break;
+            case CoinbaseMessageType::HEARTBEAT:
+                handle_heartbeat_message(raw_message);
+                break;
+            case CoinbaseMessageType::ERROR_MSG:
+                handle_error_message(raw_message);
+                break;
+            default:
+                // Unknown message type - log and ignore
+                break;
+        }
+        
+        update_statistics(msg_type);
+        
+    } catch (const std::exception& ex) {
+        std::cerr << "[MARKET DATA] Error processing message: " << ex.what() << std::endl;
+    }
 }
 
 void MarketDataFeed::handle_trade_message(const std::string& message) {
@@ -768,6 +806,7 @@ void MarketDataFeed::handle_trade_message(const std::string& message) {
     
     std::lock_guard<std::mutex> lock(stats_mutex_);
     statistics_.trades_processed++;
+    statistics_.messages_processed++;
 }
 
 void MarketDataFeed::handle_book_message(const std::string& message) {
@@ -785,16 +824,21 @@ void MarketDataFeed::handle_book_message(const std::string& message) {
     
     std::lock_guard<std::mutex> lock(stats_mutex_);
     statistics_.book_updates_processed++;
+    statistics_.messages_processed++;
 }
 
 void MarketDataFeed::handle_heartbeat_message(const std::string& /* message */) {
     std::lock_guard<std::mutex> lock(stats_mutex_);
     statistics_.last_message_time = now();
+    statistics_.messages_processed++;
 }
 
 void MarketDataFeed::handle_error_message(const std::string& message) {
     std::cout << "[MARKET DATA] Error message received: " << message << std::endl;
     notify_error(message);
+    
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    statistics_.messages_processed++;
 }
 
 // =============================================================================
@@ -804,16 +848,41 @@ void MarketDataFeed::handle_error_message(const std::string& message) {
 CoinbaseMessageType MarketDataFeed::parse_message_type(const std::string& message) {
     try {
         auto json = nlohmann::json::parse(message);
-        std::string type_str = json["type"].get<std::string>();
+        
+        // Check if this is the new Advanced Trade format with nested events
+        if (json.contains("events") && json["events"].is_array() && !json["events"].empty()) {
+            auto& first_event = json["events"][0];
+            if (first_event.contains("type")) {
+                std::string type_str = first_event["type"].get<std::string>();
 
-        if (type_str == "match") {
-            return CoinbaseMessageType::MATCH;
-        } else if (type_str == "snapshot") {
-            return CoinbaseMessageType::SNAPSHOT;
-        } else if (type_str == "l2update") {
-            return CoinbaseMessageType::L2UPDATE;
-        } else if (type_str == "heartbeat") {
-            return CoinbaseMessageType::HEARTBEAT;
+                if (type_str == "match") {
+                    return CoinbaseMessageType::MATCH;
+                } else if (type_str == "snapshot") {
+                    return CoinbaseMessageType::SNAPSHOT;
+                } else if (type_str == "l2update") {
+                    return CoinbaseMessageType::L2UPDATE;
+                } else if (type_str == "heartbeat") {
+                    return CoinbaseMessageType::HEARTBEAT;
+                } else if (type_str == "update") {
+                    // Handle "update" type for L2 updates
+                    return CoinbaseMessageType::L2UPDATE;
+                }
+            }
+        }
+        
+        // Fallback to old format (direct type field)
+        if (json.contains("type")) {
+            std::string type_str = json["type"].get<std::string>();
+
+            if (type_str == "match") {
+                return CoinbaseMessageType::MATCH;
+            } else if (type_str == "snapshot") {
+                return CoinbaseMessageType::SNAPSHOT;
+            } else if (type_str == "l2update") {
+                return CoinbaseMessageType::L2UPDATE;
+            } else if (type_str == "heartbeat") {
+                return CoinbaseMessageType::HEARTBEAT;
+            }
         }
     } catch (const nlohmann::json::parse_error& ex) {
         std::cerr << "[MARKET DATA] JSON parse error: " << ex.what() << std::endl;
@@ -829,6 +898,34 @@ CoinbaseTradeMessage MarketDataFeed::parse_trade_message(const std::string& mess
     
     try {
         auto json = nlohmann::json::parse(message);
+        
+        // Handle new Advanced Trade format with nested events
+        if (json.contains("events") && json["events"].is_array() && !json["events"].empty()) {
+            auto& first_event = json["events"][0];
+            
+            // Check if this is a trade event
+            if (first_event.contains("trades") && first_event["trades"].is_array() && !first_event["trades"].empty()) {
+                auto& trade_data = first_event["trades"][0];
+                
+                trade.trade_id = trade_data["trade_id"].get<std::string>();
+                trade.maker_order_id = trade_data.value("maker_order_id", "");
+                trade.taker_order_id = trade_data.value("taker_order_id", "");
+                trade.side = trade_data["side"].get<std::string>();
+                trade.size = trade_data["size"].get<std::string>();
+                trade.price = trade_data["price"].get<std::string>();
+                trade.product_id = trade_data["product_id"].get<std::string>();
+                trade.sequence = trade_data.value("sequence", "");
+                trade.time = trade_data.value("time", "");
+                
+                trade.parsed_price = std::stod(trade.price);
+                trade.parsed_size = std::stod(trade.size);
+                trade.parsed_side = (trade.side == "buy") ? Side::BUY : Side::SELL;
+                trade.parsed_time = now();
+                return trade;
+            }
+        }
+        
+        // Fallback to old format (direct trade fields)
         trade.trade_id = json["trade_id"].get<std::string>();
         trade.maker_order_id = json["maker_order_id"].get<std::string>();
         trade.taker_order_id = json["taker_order_id"].get<std::string>();
@@ -857,6 +954,42 @@ CoinbaseBookMessage MarketDataFeed::parse_book_message(const std::string& messag
     
     try {
         auto json = nlohmann::json::parse(message);
+        
+        // Handle new Advanced Trade format with nested events
+        if (json.contains("events") && json["events"].is_array() && !json["events"].empty()) {
+            auto& first_event = json["events"][0];
+            
+            book.type = first_event["type"].get<std::string>();
+            book.product_id = first_event["product_id"].get<std::string>();
+            book.time = first_event.value("time", "");
+            book.parsed_time = now();
+
+            // Handle updates array for L2 data
+            if (first_event.contains("updates") && first_event["updates"].is_array()) {
+                auto& updates = first_event["updates"];
+                for (const auto& update : updates) {
+                    if (update.contains("side") && update.contains("price_level") && update.contains("new_quantity")) {
+                        std::vector<std::string> change;
+                        change.push_back(update["side"].get<std::string>());
+                        change.push_back(update["price_level"].get<std::string>());
+                        change.push_back(update["new_quantity"].get<std::string>());
+                        book.changes.push_back(change);
+                        
+                        // Parse for internal use
+                        std::string side_str = change[0];
+                        double price = std::stod(change[1]);
+                        double size = std::stod(change[2]);
+                        Side side = (side_str == "bid") ? Side::BUY : Side::SELL;
+                        
+                        book.parsed_changes.emplace_back(side, price, size);
+                    }
+                }
+            }
+            
+            return book;
+        }
+        
+        // Fallback to old format (direct book fields)
         book.type = json["type"].get<std::string>();
         book.product_id = json["product_id"].get<std::string>();
         book.time = json["time"].get<std::string>();
@@ -924,7 +1057,8 @@ void MarketDataFeed::notify_connection_state_change(ConnectionState new_state, c
 
 void MarketDataFeed::update_statistics(CoinbaseMessageType /* msg_type */) {
     std::lock_guard<std::mutex> lock(stats_mutex_);
-    statistics_.messages_processed++;
+    // Note: messages_processed is incremented in individual handlers
+    // to avoid double-counting when multiple handlers are called
     statistics_.last_message_time = now();
 }
 
