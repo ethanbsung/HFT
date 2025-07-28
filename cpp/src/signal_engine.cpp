@@ -157,7 +157,12 @@ void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_pri
     price_t mid_price = top_of_book.mid_price;
     double spread_bps = orderbook_engine_->get_spread_bps();
     
-    if (mid_price <= 0.0) {
+    if (mid_price <= 0.0 || mid_price < 0.001) {
+        // Initialize output parameters to 0.0 when invalid market data or extremely small prices
+        bid_price = 0.0;
+        ask_price = 0.0;
+        bid_size = 0.0;
+        ask_size = 0.0;
         return;
     }
     
@@ -170,16 +175,23 @@ void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_pri
         return;
     }
     
-    // Calculate base spread
+    // Calculate base spread - FIXED: Use target spread directly, not with adjustment
     double target_spread_bps = config_.target_spread_bps;
-    double spread_adjustment = (target_spread_bps - spread_bps) * 0.5;
     
-    // Calculate optimal prices
-    bid_price = mid_price * (1.0 - (target_spread_bps + spread_adjustment) / 10000.0);
-    ask_price = mid_price * (1.0 + (target_spread_bps + spread_adjustment) / 10000.0);
+    // Calculate optimal prices with target spread
+    bid_price = mid_price * (1.0 - target_spread_bps / 10000.0);
+    ask_price = mid_price * (1.0 + target_spread_bps / 10000.0);
     
     // Apply inventory skew
     apply_inventory_skew(bid_price, ask_price);
+    
+    // FIXED: Safety check to ensure bid < ask after all adjustments
+    if (bid_price >= ask_price) {
+        // If prices are crossed, adjust them to maintain a minimum spread
+        double min_spread_bps = 1.0; // Minimum 1 bps spread
+        bid_price = mid_price * (1.0 - min_spread_bps / 10000.0);
+        ask_price = mid_price * (1.0 + min_spread_bps / 10000.0);
+    }
     
     // Calculate sizes
     bid_size = calculate_position_adjusted_size(config_.default_quote_size, QuoteSide::BID);
@@ -210,8 +222,8 @@ void SignalEngine::apply_inventory_skew(price_t& bid_price, price_t& ask_price) 
         ask_price *= (1.0 + skew_bps / 10000.0);
     } else {
         // Short position: decrease both prices to discourage selling
-        bid_price *= (1.0 - skew_bps / 10000.0);
-        ask_price *= (1.0 - skew_bps / 10000.0);
+        bid_price *= (1.0 - std::abs(skew_bps) / 10000.0);
+        ask_price *= (1.0 - std::abs(skew_bps) / 10000.0);
     }
 }
 
@@ -505,9 +517,15 @@ inline quantity_t SignalEngine::calculate_position_adjusted_size(quantity_t base
     if (side == QuoteSide::BID && current_position > 0) {
         // Long position: reduce bid size
         adjustment = 1.0 - (current_position / config_.max_position) * 0.5;
+    } else if (side == QuoteSide::BID && current_position < 0) {
+        // Short position: increase bid size
+        adjustment = 1.0 + (std::abs(current_position) / config_.max_position) * 0.5;
+    } else if (side == QuoteSide::ASK && current_position > 0) {
+        // Long position: increase ask size
+        adjustment = 1.0 + (current_position / config_.max_position) * 0.5;
     } else if (side == QuoteSide::ASK && current_position < 0) {
         // Short position: reduce ask size
-        adjustment = 1.0 + (current_position / config_.max_position) * 0.5;
+        adjustment = 1.0 - (std::abs(current_position) / config_.max_position) * 0.5;
     }
     
     return base_size * adjustment;
@@ -520,7 +538,7 @@ inline bool SignalEngine::should_cancel_quote(const MarketMakingQuote& quote, pr
     
     // Cancel if quote is too far from mid price
     double price_diff = std::abs(quote.price - mid_price);
-    double threshold = mid_price * 0.001; // 10 bps threshold
+    double threshold = mid_price * 0.01; // 100 bps threshold (1%)
     
     return price_diff > threshold;
 }

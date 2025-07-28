@@ -81,7 +81,7 @@ $(OBJDIR)/test_%.o: $(TESTDIR)/test_%.cpp $(HEADERS) | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 # Test executables
-test: test_data_feed test_orderbook test_latency
+test: test_data_feed test_orderbook test_latency test_signal_engine
 
 # Data feed tests
 test_data_feed: $(BINDIR)/test_data_feed
@@ -96,6 +96,11 @@ $(BINDIR)/test_orderbook_engine: $(OBJDIR)/test_orderbook_engine.o $(LIBRARY) | 
 # Latency tracker tests
 test_latency: $(BINDIR)/test_latency_tracker
 $(BINDIR)/test_latency_tracker: $(OBJDIR)/test_latency_tracker.o $(LIBRARY) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
+
+# Signal engine tests
+test_signal_engine: $(BINDIR)/test_signal_engine
+$(BINDIR)/test_signal_engine: $(OBJDIR)/test_signal_engine.o $(LIBRARY) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
 
 # Benchmark executable
@@ -192,6 +197,12 @@ check: test
 		$(BINDIR)/test_latency_tracker; \
 	else \
 		echo "Latency tracker test executable not found."; \
+	fi
+	@echo "Running signal engine tests..."
+	@if [ -f $(BINDIR)/test_signal_engine ]; then \
+		$(BINDIR)/test_signal_engine; \
+	else \
+		echo "Signal engine test executable not found."; \
 	fi
 
 # Benchmark runner

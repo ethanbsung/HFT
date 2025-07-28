@@ -148,3 +148,6 @@ a.out
 coinbase_test
 examples/
 test_data_feed
+cpp/test_signal_engine
+cpp/bin/
+.cursor/
