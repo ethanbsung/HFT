@@ -80,8 +80,17 @@ $(LIBRARY): $(OBJECTS) | $(LIBDIR)
 $(OBJDIR)/test_%.o: $(TESTDIR)/test_%.cpp $(HEADERS) | $(OBJDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
+# Main system executable
+MAIN_EXEC = $(BINDIR)/hft_system
+MAIN_OBJECT = $(OBJDIR)/main_system.o
+
 # Test executables
 test: test_data_feed test_orderbook test_latency test_signal_engine
+
+# Main system
+hft_system: $(MAIN_EXEC)
+$(MAIN_EXEC): $(MAIN_OBJECT) $(LIBRARY) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) -o $@
 
 # Data feed tests
 test_data_feed: $(BINDIR)/test_data_feed

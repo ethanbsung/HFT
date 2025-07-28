@@ -607,6 +607,30 @@ void SignalEngine::update_config(const MarketMakingConfig& config) {
     std::cout << "[SIGNAL ENGINE] Configuration updated." << std::endl;
 }
 
+void SignalEngine::process_market_data_update(const TopOfBook& top_of_book) {
+    if (!is_running_.load() || should_stop_.load() || is_destroying_.load()) {
+        return;
+    }
+    
+    // Update current market state
+    current_top_of_book_ = top_of_book;
+    
+    // Generate trading signals based on market data
+    auto signals = generate_trading_signals();
+    
+    // Log signal generation
+    if (!signals.empty()) {
+        std::cout << "🎯 SIGNAL ENGINE: Generated " << signals.size() << " trading signals" << std::endl;
+    }
+    
+    // Process generated signals
+    for (const auto& signal : signals) {
+        if (signal_callback_) {
+            signal_callback_(signal);
+        }
+    }
+}
+
 // =============================================================================
 // SETTERS FOR EXTERNAL COMPONENTS
 // =============================================================================
