@@ -46,9 +46,9 @@ int main() {
         // Create market making config
         hft::MarketMakingConfig signal_config;
         signal_config.default_quote_size = 10.0;
-        signal_config.min_spread_bps = 5.0;
-        signal_config.max_spread_bps = 50.0;
-        signal_config.target_spread_bps = 15.0;
+        signal_config.min_spread_bps = 1.0;  // Reduced from 5.0
+        signal_config.max_spread_bps = 20.0;  // Reduced from 50.0
+        signal_config.target_spread_bps = 2.0;  // Reduced from 15.0 to be more competitive
         signal_config.max_position = 100.0;
         signal_config.max_orders_per_second = 100;
         
@@ -79,40 +79,164 @@ int main() {
         order_manager.set_orderbook_engine(&orderbook_engine);
         
         // Set up callbacks for signal processing
-        signal_engine.set_signal_callback([&order_manager](const hft::TradingSignal& signal) {
+        signal_engine.set_signal_callback([&order_manager, &orderbook_engine, &latency_tracker, &signal_engine](const hft::TradingSignal& signal) {
+            std::cout << "\n🎯 DEBUG: Signal received - Type: " 
+                      << (signal.type == hft::SignalType::PLACE_BID ? "PLACE_BID" : 
+                          signal.type == hft::SignalType::PLACE_ASK ? "PLACE_ASK" :
+                          signal.type == hft::SignalType::CANCEL_BID ? "CANCEL_BID" : "CANCEL_ASK")
+                      << " Side: " << (signal.side == hft::Side::BUY ? "BUY" : "SELL")
+                      << " Price: $" << signal.price << " Qty: " << signal.quantity << std::endl;
+            
             if (signal.type == hft::SignalType::PLACE_BID || signal.type == hft::SignalType::PLACE_ASK) {
-                auto order_id = order_manager.create_order(signal.side, signal.price, signal.quantity);
+                // Get current mid price for performance tracking
+                auto top_of_book = orderbook_engine.get_top_of_book();
+                hft::price_t current_mid = top_of_book.mid_price;
+                
+                std::cout << "📊 DEBUG: Current market - Bid: $" << top_of_book.bid_price 
+                          << " Ask: $" << top_of_book.ask_price 
+                          << " Mid: $" << current_mid << std::endl;
+                
+                // Measure order creation latency
+                auto creation_start = hft::now();
+                auto order_id = order_manager.create_order(signal.side, signal.price, signal.quantity, current_mid);
+                auto creation_end = hft::now();
+                auto creation_latency = hft::time_diff_us(creation_start, creation_end);
+                
+                std::cout << "⏱️ DEBUG: Order creation latency: " << creation_latency.count() << " μs" << std::endl;
+                latency_tracker.add_latency(hft::LatencyType::ORDER_PLACEMENT, creation_latency);
+                
                 if (order_id > 0) {
-                    std::cout << "🎯 MARKET MAKING: " 
+                    std::cout << "✅ DEBUG: Order created successfully - ID: " << order_id << std::endl;
+                    
+                    // Track order placement in signal engine
+                    hft::QuoteSide quote_side = (signal.side == hft::Side::BUY) ? hft::QuoteSide::BID : hft::QuoteSide::ASK;
+                    signal_engine.track_order_placement(order_id, quote_side, signal.price, signal.quantity);
+                    
+                    // Measure order submission latency
+                    auto submission_start = hft::now();
+                    bool submitted = order_manager.submit_order(order_id);
+                    auto submission_end = hft::now();
+                    auto submission_latency = hft::time_diff_us(submission_start, submission_end);
+                    
+                    std::cout << "⏱️ DEBUG: Order submission latency: " << submission_latency.count() << " μs" << std::endl;
+                    latency_tracker.add_latency(hft::LatencyType::ORDER_PLACEMENT, submission_latency);
+                    
+                    if (submitted) {
+                        std::cout << "🎯 MARKET MAKING: " 
+                                  << (signal.side == hft::Side::BUY ? "BID" : "ASK") 
+                                  << " $" << signal.price << " x " << signal.quantity 
+                                  << " (Order ID: " << order_id << ") ✅ SUBMITTED" << std::endl;
+                        
+                        // Track total order placement time
+                        auto total_latency = hft::time_diff_us(creation_start, submission_end);
+                        std::cout << "⏱️ DEBUG: Total order placement latency: " << total_latency.count() << " μs" << std::endl;
+                        latency_tracker.add_latency(hft::LatencyType::TICK_TO_TRADE, total_latency);
+                    } else {
+                        std::cout << "❌ FAILED TO SUBMIT: Order " << order_id 
+                                  << " creation succeeded but submission failed" << std::endl;
+                        // Clean up the failed order and remove from tracking
+                        order_manager.cancel_order(order_id);
+                        signal_engine.track_order_cancellation(order_id);
+                    }
+                } else {
+                    std::cout << "❌ FAILED TO CREATE: " 
                               << (signal.side == hft::Side::BUY ? "BID" : "ASK") 
-                              << " $" << signal.price << " x " << signal.quantity 
-                              << " (Order ID: " << order_id << ")" << std::endl;
+                              << " $" << signal.price << " x " << signal.quantity << std::endl;
                 }
             } else if (signal.type == hft::SignalType::CANCEL_BID || signal.type == hft::SignalType::CANCEL_ASK) {
-                std::cout << "❌ CANCEL: " 
-                          << (signal.side == hft::Side::BUY ? "BID" : "ASK") 
-                          << " Order ID: " << signal.order_id << std::endl;
+                std::cout << "🔄 DEBUG: Attempting to cancel order ID: " << signal.order_id << std::endl;
+                
+                auto cancel_start = hft::now();
+                bool cancelled = order_manager.cancel_order(signal.order_id);
+                auto cancel_end = hft::now();
+                auto cancel_latency = hft::time_diff_us(cancel_start, cancel_end);
+                
+                std::cout << "⏱️ DEBUG: Order cancellation latency: " << cancel_latency.count() << " μs" << std::endl;
+                latency_tracker.add_latency(hft::LatencyType::ORDER_CANCELLATION, cancel_latency);
+                
+                if (cancelled) {
+                    std::cout << "✅ CANCELLED: " 
+                              << (signal.side == hft::Side::BUY ? "BID" : "ASK") 
+                              << " Order ID: " << signal.order_id << std::endl;
+                    
+                    // Track order cancellation in signal engine
+                    signal_engine.track_order_cancellation(signal.order_id);
+                } else {
+                    std::cout << "❌ CANCEL FAILED: Order ID: " << signal.order_id << std::endl;
+                }
             }
         });
         
         // Set up callbacks for order execution
-        order_manager.set_fill_callback([](const hft::OrderInfo& order_info, hft::quantity_t fill_qty, 
+        order_manager.set_fill_callback([&latency_tracker, &signal_engine](const hft::OrderInfo& order_info, hft::quantity_t fill_qty, 
                                           hft::price_t fill_price, bool is_final_fill) {
+            std::cout << "\n💰 DEBUG: Order FILL detected!" << std::endl;
+            std::cout << "   Order ID: " << order_info.order.order_id << std::endl;
+            std::cout << "   Side: " << (order_info.order.side == hft::Side::BUY ? "BUY" : "SELL") << std::endl;
+            std::cout << "   Fill Qty: " << fill_qty << " @ $" << fill_price << std::endl;
+            std::cout << "   Original Qty: " << order_info.order.original_quantity << std::endl;
+            std::cout << "   Remaining Qty: " << order_info.order.remaining_quantity << std::endl;
+            std::cout << "   Is Final Fill: " << (is_final_fill ? "YES" : "NO") << std::endl;
+            
+            // Track order fill in signal engine
+            signal_engine.track_order_fill(order_info.order.order_id, fill_qty, fill_price);
+            
+            // Calculate and track fill latency
+            if (order_info.submission_time != hft::timestamp_t{}) {
+                auto fill_latency = hft::time_diff_us(order_info.submission_time, hft::now());
+                std::cout << "⏱️ DEBUG: Fill latency: " << fill_latency.count() << " μs" << std::endl;
+                latency_tracker.add_latency(hft::LatencyType::TICK_TO_TRADE, fill_latency);
+            }
+            
+            // Calculate slippage
+            double slippage_bps = 0.0;
+            if (order_info.order.price > 0.0 && fill_price > 0.0) {
+                slippage_bps = ((fill_price - order_info.order.price) / order_info.order.price) * 10000.0;
+                std::cout << "📊 DEBUG: Slippage: " << slippage_bps << " bps" << std::endl;
+            }
+            
             std::cout << "💰 FILL: " << (order_info.order.side == hft::Side::BUY ? "BUY" : "SELL") 
                       << " " << fill_qty << " @ $" << fill_price 
                       << " (Order ID: " << order_info.order.order_id << ")" << std::endl;
         });
         
         // Set up callbacks for market data
-        market_data_feed.set_book_message_callback([&signal_engine, &orderbook_engine](const hft::CoinbaseBookMessage& book_msg) {
-            std::cout << "📊 MARKET DATA: " << book_msg.product_id 
+        market_data_feed.set_book_message_callback([&signal_engine, &orderbook_engine, &latency_tracker](const hft::CoinbaseBookMessage& book_msg) {
+            auto market_data_start = hft::now();
+            
+            std::cout << "\n📊 DEBUG: Market data received - " << book_msg.product_id 
                       << " - " << book_msg.changes.size() << " updates" << std::endl;
             
-            // Trigger signal engine with updated market data
+            // CRITICAL FIX: Trigger signal engine with updated market data
             auto top_of_book = orderbook_engine.get_top_of_book();
             if (top_of_book.bid_price > 0.0 && top_of_book.ask_price > 0.0) {
-                signal_engine.process_market_data_update(top_of_book);
+                // Ensure market is not crossed before processing
+                if (top_of_book.bid_price < top_of_book.ask_price) {
+                    std::cout << "📈 DEBUG: Valid market data - Bid: $" << top_of_book.bid_price 
+                              << " Ask: $" << top_of_book.ask_price 
+                              << " Spread: $" << (top_of_book.ask_price - top_of_book.bid_price) << std::endl;
+                    
+                    auto signal_start = hft::now();
+                    signal_engine.process_market_data_update(top_of_book);
+                    auto signal_end = hft::now();
+                    auto signal_latency = hft::time_diff_us(signal_start, signal_end);
+                    
+                    std::cout << "⏱️ DEBUG: Signal generation latency: " << signal_latency.count() << " μs" << std::endl;
+                    latency_tracker.add_latency(hft::LatencyType::TICK_TO_TRADE, signal_latency);
+                } else {
+                    std::cout << "⚠️ WARNING: Crossed market detected - BID: $" 
+                              << top_of_book.bid_price << " >= ASK: $" << top_of_book.ask_price 
+                              << " - skipping signal generation" << std::endl;
+                }
+            } else {
+                std::cout << "⚠️ WARNING: Invalid market data - BID: $" 
+                          << top_of_book.bid_price << ", ASK: $" << top_of_book.ask_price << std::endl;
             }
+            
+            auto market_data_end = hft::now();
+            auto market_data_latency = hft::time_diff_us(market_data_start, market_data_end);
+            std::cout << "⏱️ DEBUG: Total market data processing latency: " << market_data_latency.count() << " μs" << std::endl;
+            latency_tracker.add_latency(hft::LatencyType::MARKET_DATA_PROCESSING, market_data_latency);
         });
         
         // Set up callbacks for trade messages
@@ -146,6 +270,12 @@ int main() {
         while (g_running) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             
+            // Periodic cleanup of stale quotes
+            static int cleanup_counter = 0;
+            if (++cleanup_counter % 30 == 0) { // Every 30 seconds
+                signal_engine.clear_stale_quotes();
+            }
+            
             // Print periodic status
             static int status_counter = 0;
             if (++status_counter % 10 == 0) {
@@ -163,14 +293,49 @@ int main() {
                           << " Fills: " << stats.filled_orders 
                           << " Fill Rate: " << (stats.total_orders > 0 ? (stats.filled_orders * 100.0 / stats.total_orders) : 0) << "%" << std::endl;
                 std::cout << "   Active Orders: " << order_manager.get_active_order_count() << std::endl;
+                
+                // Print latency statistics every 30 seconds
+                if (status_counter % 30 == 0) {
+                    std::cout << "\n⏱️ LATENCY STATISTICS:" << std::endl;
+                    auto order_latency = latency_tracker.get_statistics(hft::LatencyType::ORDER_PLACEMENT);
+                    auto market_data_latency = latency_tracker.get_statistics(hft::LatencyType::MARKET_DATA_PROCESSING);
+                    auto tick_to_trade_latency = latency_tracker.get_statistics(hft::LatencyType::TICK_TO_TRADE);
+                    
+                    std::cout << "   Order Placement - Mean: " << order_latency.mean_us << "μs, P95: " << order_latency.p95_us << "μs" << std::endl;
+                    std::cout << "   Market Data - Mean: " << market_data_latency.mean_us << "μs, P95: " << market_data_latency.p95_us << "μs" << std::endl;
+                    std::cout << "   Tick-to-Trade - Mean: " << tick_to_trade_latency.mean_us << "μs, P95: " << tick_to_trade_latency.p95_us << "μs" << std::endl;
+                }
             }
         }
         
         // Shutdown
         std::cout << "🛑 Shutting down..." << std::endl;
         
+        // Stop components in reverse order of dependencies with timeout
         signal_engine.stop();
+        
+        // Stop market data feed with timeout
+        std::cout << "🔄 Stopping market data feed..." << std::endl;
         market_data_feed.stop();
+        
+        // Wait for market data to stop with timeout
+        auto start_time = std::chrono::steady_clock::now();
+        while (market_data_feed.is_connected() && 
+               std::chrono::steady_clock::now() - start_time < std::chrono::seconds(5)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        
+        if (market_data_feed.is_connected()) {
+            std::cout << "⚠️ Market data feed still connected after timeout, forcing shutdown" << std::endl;
+        }
+        
+        // Cancel all remaining orders before shutdown
+        std::cout << "🔄 Cancelling remaining orders..." << std::endl;
+        auto active_orders = order_manager.get_active_order_count();
+        if (active_orders > 0) {
+            std::cout << "📋 Found " << active_orders << " active orders to cancel" << std::endl;
+            // The OrderManager destructor will handle cancellation
+        }
         
         // Print final statistics
         std::cout << "\n📊 FINAL STATISTICS:" << std::endl;

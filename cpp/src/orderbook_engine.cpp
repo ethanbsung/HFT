@@ -60,15 +60,9 @@ OrderBookEngine::~OrderBookEngine() {
     if (active_order_count > 0) {
         std::cout << "⚠️  WARNING: Found " << active_order_count << " remaining orders during shutdown" << std::endl;
         
-        // Cancel all remaining orders if OrderManager is available
-        if (order_manager_) {
-            for (const auto& [order_id, order] : active_orders_) {
-                order_manager_->handle_cancel_confirmation(order_id);
-            }
-            std::cout << "  Cancelled " << active_order_count << " remaining orders" << std::endl;
-        } else {
-            std::cout << "  (No OrderManager available - orders not cancelled)" << std::endl;
-        }
+        // Note: OrderManager handles order cancellation during its own shutdown
+        // We just clean up the order book data structures here
+        std::cout << "  (Orders will be cancelled by OrderManager during shutdown)" << std::endl;
     }
     
     // Print final order book statistics
@@ -1268,6 +1262,11 @@ void OrderBookEngine::execute_trade(uint64_t aggressor_id, uint64_t passive_id,
                                    price_t price, quantity_t quantity, Side aggressor_side) {
     // OPTIMIZED IMPLEMENTATION: Execute a trade between two orders
     
+    std::cout << "💰 DEBUG: Executing trade - Aggressor: " << aggressor_id 
+              << " Passive: " << passive_id 
+              << " Price: $" << price << " Qty: " << quantity 
+              << " Side: " << (aggressor_side == Side::BUY ? "BUY" : "SELL") << std::endl;
+    
     // Create trade execution directly for better performance
     TradeExecution trade;
     trade.trade_id = next_trade_id_.fetch_add(1);
@@ -1286,6 +1285,10 @@ void OrderBookEngine::execute_trade(uint64_t aggressor_id, uint64_t passive_id,
         statistics_.last_trade_time = trade.timestamp;
     }
     
+    std::cout << "📊 DEBUG: Trade executed - Trade ID: " << trade.trade_id 
+              << " Total trades: " << statistics_.total_trades 
+              << " Total volume: " << statistics_.total_volume << std::endl;
+    
     // Notify callbacks
     if (trade_callback_) {
         trade_callback_(trade);
@@ -1293,10 +1296,14 @@ void OrderBookEngine::execute_trade(uint64_t aggressor_id, uint64_t passive_id,
     
     // Update OrderManager with fills
     if (order_manager_) {
+        std::cout << "📤 DEBUG: Notifying OrderManager of fills..." << std::endl;
         // Notify aggressor
         order_manager_->handle_fill(aggressor_id, quantity, price, trade.timestamp, true);
         // Notify passive order
         order_manager_->handle_fill(passive_id, quantity, price, trade.timestamp, true);
+        std::cout << "✅ DEBUG: OrderManager notified of fills" << std::endl;
+    } else {
+        std::cout << "⚠️ DEBUG: No OrderManager available for trade notification" << std::endl;
     }
     
     // Update last trade price
@@ -1641,6 +1648,38 @@ void OrderBookEngine::process_market_data_trade(const TradeExecution& trade) {
     // Notify trade callback
     if (trade_callback_) {
         trade_callback_(trade);
+    }
+    
+    // Use actual trade to simulate market orders against our resting orders
+    simulate_market_order_from_trade(trade);
+}
+
+void OrderBookEngine::simulate_market_order_from_trade(const TradeExecution& trade) {
+    // Skip if no resting orders to match against
+    if (bids_.empty() && asks_.empty()) {
+        return;
+    }
+    
+    // Determine market order side based on the actual trade
+    // If trade side is BUY, it means someone bought (took liquidity) - simulate a BUY market order
+    // If trade side is SELL, it means someone sold (took liquidity) - simulate a SELL market order
+    Side market_order_side = trade.aggressor_side;
+    quantity_t market_order_qty = trade.quantity;
+    
+    // Process the market order against our resting orders
+    std::vector<TradeExecution> executions;
+    MatchResult result = process_market_order(market_order_side, market_order_qty, executions);
+    
+    if (result == MatchResult::FULL_FILL || result == MatchResult::PARTIAL_FILL) {
+        std::cout << "🎯 MARKET ORDER FROM TRADE: " << (market_order_side == Side::BUY ? "BUY" : "SELL") 
+                  << " " << market_order_qty << " @ market - " << executions.size() << " executions" << std::endl;
+        
+        // Process executions
+        for (const auto& execution : executions) {
+            if (trade_callback_) {
+                trade_callback_(execution);
+            }
+        }
     }
 }
 

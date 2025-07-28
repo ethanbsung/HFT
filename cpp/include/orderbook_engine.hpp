@@ -239,6 +239,9 @@ public:
     void process_market_data_cancel(uint64_t order_id);
     void process_market_data_trade(const TradeExecution& trade);
     
+    // Simulation methods
+    void simulate_market_order_from_trade(const TradeExecution& trade);
+    
     // Market making specific methods
     void add_market_maker_order(const Order& order);
     bool is_our_order(uint64_t order_id) const;

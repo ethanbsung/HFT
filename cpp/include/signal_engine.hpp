@@ -458,6 +458,30 @@ public:
      */
     void notify_risk_alert(const std::string& alert, double value);
 
+    // =========================================================================
+    // QUOTE MANAGEMENT METHODS
+    // =========================================================================
+    
+    /**
+     * Track order placement for quote management
+     */
+    void track_order_placement(uint64_t order_id, QuoteSide side, price_t price, quantity_t quantity);
+    
+    /**
+     * Track order cancellation for quote management
+     */
+    void track_order_cancellation(uint64_t order_id);
+    
+    /**
+     * Track order fill for quote management
+     */
+    void track_order_fill(uint64_t order_id, quantity_t fill_qty, price_t fill_price);
+    
+    /**
+     * Clear stale quotes from tracking
+     */
+    void clear_stale_quotes();
+
 private:
     // =========================================================================
     // PRIVATE MEMBER VARIABLES

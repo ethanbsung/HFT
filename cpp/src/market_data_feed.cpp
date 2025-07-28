@@ -151,8 +151,8 @@ MarketDataFeed::MarketDataFeed(OrderBookEngine& order_book,
 
         client->set_message_handler([this](websocketpp::connection_hdl /* hdl */, WebSocketMessage msg) {
             if (msg->get_opcode() == websocketpp::frame::opcode::text) {
-                // Use fast path for HFT
-                process_message_fast(msg->get_payload());
+                // Use full message processing to trigger callbacks
+                process_message(msg->get_payload());
             }
         });
         
@@ -236,9 +236,21 @@ void MarketDataFeed::stop() {
     // Close WebSocket connection
     close_connection();
     
-    // Stop threads
+    // Stop threads with timeout
     if (websocket_thread_ && websocket_thread_->joinable()) {
-        websocket_thread_->join();
+        // Wait for thread to finish with timeout
+        auto start_time = std::chrono::steady_clock::now();
+        while (websocket_thread_->joinable() && 
+               std::chrono::steady_clock::now() - start_time < std::chrono::seconds(3)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        
+        if (websocket_thread_->joinable()) {
+            std::cout << "[MARKET DATA] WebSocket thread not finishing, detaching..." << std::endl;
+            websocket_thread_->detach();
+        } else {
+            websocket_thread_->join();
+        }
     }
     
     connection_state_.store(ConnectionState::DISCONNECTED);
@@ -545,7 +557,19 @@ void MarketDataFeed::websocket_thread_main() {
     if (websocket_handle_) {
         try {
             auto* client = static_cast<WebSocketClient*>(websocket_handle_);
-            client->run();
+            
+            // Run with periodic shutdown checks
+            auto start_time = std::chrono::steady_clock::now();
+            while (!should_stop_.load() && 
+                   std::chrono::steady_clock::now() - start_time < std::chrono::seconds(30)) {
+                client->run_one();  // Run one iteration instead of blocking run()
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            
+            if (should_stop_.load()) {
+                std::cout << "[MARKET DATA] WebSocket thread stopping due to shutdown signal" << std::endl;
+            }
+            
         } catch (const std::exception& ex) {
             std::cerr << "[MARKET DATA] WebSocket thread error: " << ex.what() << std::endl;
         }
@@ -585,6 +609,8 @@ void MarketDataFeed::start_jwt_refresh_timer(websocketpp::connection_hdl /* hdl 
 void MarketDataFeed::process_message(const std::string& raw_message) {
     MEASURE_MARKET_DATA_LATENCY_FAST(latency_tracker_);
     
+    std::cout << "📨 DEBUG: process_message called with message length: " << raw_message.length() << std::endl;
+    
     // Update received message count
     {
         std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -597,10 +623,12 @@ void MarketDataFeed::process_message(const std::string& raw_message) {
         // Handle new Advanced Trade format
         if (json.contains("channel") && json.contains("events")) {
             std::string channel = json["channel"].get<std::string>();
+            std::cout << "📨 DEBUG: Received message on channel: " << channel << std::endl;
             
             if (channel == "market_trades") {
                 handle_trade_message(raw_message);
-            } else if (channel == "l2_data") {
+            } else if (channel == "level2" || channel == "l2_data") {
+                std::cout << "📊 DEBUG: Processing level2/l2_data message" << std::endl;
                 handle_book_message(raw_message);
             } else if (channel == "ticker") {
                 // Handle ticker messages if needed
@@ -655,6 +683,8 @@ void MarketDataFeed::process_message(const std::string& raw_message) {
 void MarketDataFeed::process_message_fast(const std::string& raw_message) {
     MEASURE_MARKET_DATA_LATENCY_FAST(latency_tracker_);
     
+    std::cout << "⚡ DEBUG: process_message_fast called with message length: " << raw_message.length() << std::endl;
+    
     try {
         auto json = nlohmann::json::parse(raw_message);
         
@@ -663,8 +693,10 @@ void MarketDataFeed::process_message_fast(const std::string& raw_message) {
             auto& first_event = json["events"][0];
             
             if (first_event.contains("trades")) {
+                std::cout << "⚡ DEBUG: Processing trade in fast path" << std::endl;
                 process_trade_fast(first_event);
             } else if (first_event.contains("updates")) {
+                std::cout << "⚡ DEBUG: Processing book update in fast path" << std::endl;
                 process_book_update_fast(first_event);
             }
         }
@@ -678,6 +710,7 @@ void MarketDataFeed::process_message_fast(const std::string& raw_message) {
         
     } catch (const std::exception& ex) {
         // Minimal error handling for speed
+        std::cout << "⚡ DEBUG: Error in fast path: " << ex.what() << std::endl;
     }
 }
 

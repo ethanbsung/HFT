@@ -107,29 +107,44 @@ uint64_t OrderManager::create_order(Side side, price_t price, quantity_t quantit
                                     price_t current_mid_price) {
     MEASURE_ORDER_LATENCY_FAST(latency_tracker_);
     
+    std::cout << "🔧 DEBUG: Creating order - Side: " << (side == Side::BUY ? "BUY" : "SELL")
+              << " Price: $" << price << " Qty: " << quantity 
+              << " Mid: $" << current_mid_price << std::endl;
+    
     // Fast path: check emergency shutdown and basic validation
-    if (is_emergency_shutdown_.load(std::memory_order_relaxed)) return 0;
+    if (is_emergency_shutdown_.load(std::memory_order_relaxed)) {
+        std::cout << "❌ DEBUG: Emergency shutdown active - rejecting order" << std::endl;
+        return 0;
+    }
     
     // PERFORMANCE: Combined validation in single check
     if (quantity <= 0.0 || price <= 0.0) {
+        std::cout << "❌ DEBUG: Invalid order parameters - qty: " << quantity << " price: " << price << std::endl;
         return 0;  // Reject invalid parameters
     }
     
     // PERFORMANCE: Inline risk check for critical path
     RiskCheckResult risk_result = check_pre_trade_risk(side, quantity, price);
     if (risk_result != RiskCheckResult::APPROVED) {
+        std::cout << "❌ DEBUG: Risk check failed - result: " << static_cast<int>(risk_result) << std::endl;
         // PERFORMANCE: Remove string conversion and cout in critical path
         return 0;
     }
     
+    std::cout << "✅ DEBUG: Risk check passed" << std::endl;
+    
     // PERFORMANCE: Lock-free ID generation
     uint64_t order_id = generate_order_id();
+    std::cout << "🆔 DEBUG: Generated order ID: " << order_id << std::endl;
     
     // PERFORMANCE: Direct memory pool access
     Order* pooled_order = memory_manager_.order_pool().acquire_order();
     if (!pooled_order) {
+        std::cout << "❌ DEBUG: Memory pool exhausted - cannot create order" << std::endl;
         return 0;  // Pool exhausted
     }
+    
+    std::cout << "✅ DEBUG: Acquired order from memory pool" << std::endl;
     
     // PERFORMANCE: Single timestamp capture
     timestamp_t creation_time = now();
@@ -163,6 +178,9 @@ uint64_t OrderManager::create_order(Side side, price_t price, quantity_t quantit
     // PERFORMANCE: Batch container updates
     pending_orders_.insert(order_id);
     pooled_orders_[order_id] = pooled_order;
+
+    std::cout << "✅ DEBUG: Order created successfully - ID: " << order_id 
+              << " Status: PENDING_SUBMISSION" << std::endl;
 
     // PERFORMANCE: Minimize locked section
     {
@@ -308,14 +326,28 @@ void OrderManager::set_orderbook_engine(OrderBookEngine* orderbook_engine) {
 
 bool OrderManager::submit_order(uint64_t order_id) {
     // Emergency shutdown check
-    if (is_emergency_shutdown_.load()) return false;
+    if (is_emergency_shutdown_.load()) {
+        std::cout << "❌ DEBUG: Emergency shutdown active - cannot submit order " << order_id << std::endl;
+        return false;
+    }
+
+    std::cout << "🚀 DEBUG: Submitting order ID: " << order_id << std::endl;
 
     // Fast order lookup
     OrderInfo* order_info = find_order(order_id);
-    if (!order_info) return false;
+    if (!order_info) {
+        std::cout << "❌ DEBUG: Order not found - ID: " << order_id << std::endl;
+        return false;
+    }
+
+    std::cout << "📋 DEBUG: Order found - Side: " << (order_info->order.side == Side::BUY ? "BUY" : "SELL")
+              << " Price: $" << order_info->order.price << " Qty: " << order_info->order.remaining_quantity
+              << " Status: " << static_cast<int>(order_info->execution_state) << std::endl;
 
     // State validation: Only submit if pending submission
     if (order_info->execution_state != ExecutionState::PENDING_SUBMISSION) {
+        std::cout << "❌ DEBUG: Order not in PENDING_SUBMISSION state - current: " 
+                  << static_cast<int>(order_info->execution_state) << std::endl;
         return false;
     }
 
@@ -324,6 +356,7 @@ bool OrderManager::submit_order(uint64_t order_id) {
                                                        order_info->order.remaining_quantity,
                                                        order_info->order.price);
     if (risk_result != RiskCheckResult::APPROVED) {
+        std::cout << "❌ DEBUG: Final risk check failed - result: " << static_cast<int>(risk_result) << std::endl;
         if (risk_callback_) {
             risk_callback_(RiskViolationType::ORDER_RATE_LIMIT, 
                 "Order submission risk check failed: " + risk_check_result_to_string(risk_result));
@@ -331,19 +364,26 @@ bool OrderManager::submit_order(uint64_t order_id) {
         return false;
     }
 
+    std::cout << "✅ DEBUG: Final risk check passed" << std::endl;
+
     // Order rate limiting
     if (!check_order_rate_limit()) {
+        std::cout << "❌ DEBUG: Order rate limit exceeded" << std::endl;
         if (risk_callback_) {
             risk_callback_(RiskViolationType::ORDER_RATE_LIMIT, "Order rate limit exceeded");
         }
         return false;
     }
 
+    std::cout << "✅ DEBUG: Rate limit check passed" << std::endl;
+
     // Update order state
     order_info->execution_state = ExecutionState::SUBMITTED;
     order_info->order.status = OrderStatus::ACTIVE;
     order_info->order.last_update_time = now();
     order_info->submission_time = order_info->order.last_update_time;
+
+    std::cout << "📤 DEBUG: Order state updated to SUBMITTED" << std::endl;
 
     // Track order submission for rate limiting
     {
@@ -361,13 +401,21 @@ bool OrderManager::submit_order(uint64_t order_id) {
     pending_orders_.erase(order_id);
     active_orders_.insert(order_id);
 
+    std::cout << "🔄 DEBUG: Order moved from pending to active" << std::endl;
+
     // **CRITICAL INTEGRATION:** Submit order to OrderBookEngine for execution
     if (orderbook_engine_) {
+        std::cout << "🎯 DEBUG: Submitting to OrderBookEngine..." << std::endl;
         std::vector<TradeExecution> executions;
         MatchResult result = orderbook_engine_->submit_order_from_manager(order_info->order, executions);
         
+        std::cout << "📊 DEBUG: OrderBookEngine result: " << static_cast<int>(result) 
+                  << " Executions: " << executions.size() << std::endl;
+        
         // Process any immediate executions
         for (const auto& execution : executions) {
+            std::cout << "⚡ DEBUG: Immediate execution - Qty: " << execution.quantity 
+                      << " Price: $" << execution.price << std::endl;
             handle_fill(order_id, execution.quantity, execution.price, now(), 
                        execution.quantity >= order_info->order.remaining_quantity);
         }
@@ -375,16 +423,16 @@ bool OrderManager::submit_order(uint64_t order_id) {
         // Handle immediate execution results
         switch (result) {
             case MatchResult::FULL_FILL:
-                // Order was fully executed immediately
+                std::cout << "✅ DEBUG: Order fully executed immediately" << std::endl;
                 break;
             case MatchResult::PARTIAL_FILL:
-                // Order was partially executed, remainder is in book
+                std::cout << "📊 DEBUG: Order partially executed, remainder in book" << std::endl;
                 break;
             case MatchResult::NO_MATCH:
-                // Order was placed in book, waiting for match
+                std::cout << "📋 DEBUG: Order placed in book, waiting for match" << std::endl;
                 break;
             case MatchResult::REJECTED:
-                // Order was rejected by book engine
+                std::cout << "❌ DEBUG: Order rejected by OrderBookEngine" << std::endl;
                 order_info->execution_state = ExecutionState::REJECTED;
                 order_info->order.status = OrderStatus::REJECTED;
                 active_orders_.erase(order_id);
@@ -402,6 +450,8 @@ bool OrderManager::submit_order(uint64_t order_id) {
             ((execution_stats_.avg_submission_latency_us * (execution_stats_.total_orders - 1)) + latency_us)
             / execution_stats_.total_orders;
     }
+
+    std::cout << "✅ DEBUG: Order submission complete - Total latency: " << latency_us << " μs" << std::endl;
 
     if (order_callback_) {
         order_callback_(*order_info);
@@ -437,20 +487,37 @@ bool OrderManager::handle_fill(uint64_t order_id, quantity_t fill_qty, price_t f
                               timestamp_t fill_time, bool is_final_fill) {
     // Handle order execution (partial or full)
     // LEARNING GOAL: This is where trades happen! Very important.
+    
+    std::cout << "\n💰 DEBUG: Processing fill for order " << order_id << std::endl;
+    std::cout << "   Fill Qty: " << fill_qty << " @ $" << fill_price << std::endl;
+    std::cout << "   Is Final: " << (is_final_fill ? "YES" : "NO") << std::endl;
+    
     OrderInfo* order_info = find_order(order_id);
-    if (!order_info) return false;
+    if (!order_info) {
+        std::cout << "❌ DEBUG: Order not found for fill - ID: " << order_id << std::endl;
+        return false;
+    }
+
+    std::cout << "📋 DEBUG: Order found - Side: " << (order_info->order.side == Side::BUY ? "BUY" : "SELL")
+              << " Original Qty: " << order_info->order.original_quantity
+              << " Remaining: " << order_info->order.remaining_quantity << std::endl;
 
     // Calculate volume-weighted average fill price for accumulating fills
     quantity_t previous_filled = order_info->filled_quantity;
     quantity_t total_filled = previous_filled + fill_qty;
     
+    std::cout << "📊 DEBUG: Previous filled: " << previous_filled 
+              << " New fill: " << fill_qty << " Total: " << total_filled << std::endl;
+    
     if (previous_filled == 0) {
         // First fill - use fill price directly
         order_info->average_fill_price = fill_price;
+        std::cout << "💰 DEBUG: First fill - avg price set to: $" << fill_price << std::endl;
     } else {
         // Subsequent fill - calculate volume-weighted average
         order_info->average_fill_price = 
             ((order_info->average_fill_price * previous_filled) + (fill_price * fill_qty)) / total_filled;
+        std::cout << "💰 DEBUG: Subsequent fill - new avg price: $" << order_info->average_fill_price << std::endl;
     }
     
     // Accumulate filled quantity
@@ -462,19 +529,23 @@ bool OrderManager::handle_fill(uint64_t order_id, quantity_t fill_qty, price_t f
         order_info->execution_state = ExecutionState::FILLED;
         // Remove filled order from active orders
         active_orders_.erase(order_id);
+        std::cout << "✅ DEBUG: Order completely filled - removed from active orders" << std::endl;
         
         // **CRITICAL FIX: Release order back to memory pool when completely filled**
         auto pooled_it = pooled_orders_.find(order_id);
         if (pooled_it != pooled_orders_.end()) {
             memory_manager_.order_pool().release_order(pooled_it->second);
             pooled_orders_.erase(pooled_it);
+            std::cout << "♻️ DEBUG: Released order back to memory pool" << std::endl;
         }
     } else {
         order_info->execution_state = ExecutionState::PARTIALLY_FILLED;
+        std::cout << "📊 DEBUG: Order partially filled - remaining: " << order_info->order.remaining_quantity << std::endl;
     }
     
     // Update position
     update_position(fill_qty, fill_price, order_info->order.side);
+    std::cout << "📈 DEBUG: Position updated" << std::endl;
 
     // Update daily volume and trade count
     {
@@ -488,6 +559,9 @@ bool OrderManager::handle_fill(uint64_t order_id, quantity_t fill_qty, price_t f
     // Calculate execution quality metrics
     order_info->slippage = fill_price - order_info->order.price;
     order_info->market_impact_bps = calculate_market_impact(fill_qty, fill_price);
+    
+    std::cout << "📊 DEBUG: Slippage: $" << order_info->slippage 
+              << " Market Impact: " << order_info->market_impact_bps << " bps" << std::endl;
 
     // Update performance statistics
     if (is_final_fill) {
@@ -499,6 +573,8 @@ bool OrderManager::handle_fill(uint64_t order_id, quantity_t fill_qty, price_t f
             execution_stats_.fill_rate = static_cast<double>(execution_stats_.filled_orders) / 
                                         execution_stats_.total_orders;
         }
+        
+        std::cout << "📈 DEBUG: Updated execution statistics" << std::endl;
     }
 
     // Notify fill event
@@ -506,6 +582,7 @@ bool OrderManager::handle_fill(uint64_t order_id, quantity_t fill_qty, price_t f
         fill_callback_(*order_info, fill_qty, fill_price, is_final_fill);
     }
 
+    std::cout << "✅ DEBUG: Fill processing complete" << std::endl;
     return true;
 }
 
@@ -637,9 +714,18 @@ void OrderManager::update_position(quantity_t quantity, price_t price, Side side
     quantity_t old_position = current_position_.net_position;
     price_t old_avg_price = current_position_.avg_price;
     
+    std::cout << "📈 DEBUG: Updating position - Qty: " << quantity 
+              << " Price: $" << price 
+              << " Side: " << (side == Side::BUY ? "BUY" : "SELL") << std::endl;
+    std::cout << "📊 DEBUG: Old position: " << old_position 
+              << " Old avg price: $" << old_avg_price << std::endl;
+    
     // Convert trade to signed quantity (positive for buy, negative for sell)
     quantity_t trade_qty = (side == Side::BUY) ? quantity : -quantity;
     quantity_t new_position = old_position + trade_qty;
+    
+    std::cout << "📊 DEBUG: Trade qty: " << trade_qty 
+              << " New position: " << new_position << std::endl;
     
     // Calculate realized P&L when reducing or closing position
     if ((old_position > 0 && trade_qty < 0) || (old_position < 0 && trade_qty > 0)) {
@@ -650,12 +736,17 @@ void OrderManager::update_position(quantity_t quantity, price_t price, Side side
         if (old_position > 0) {
             // Reducing long position: PnL = (sell_price - avg_cost) * reduction
             pnl = (price - old_avg_price) * reduction;
+            std::cout << "💰 DEBUG: Reducing long position - PnL: $" << pnl 
+                      << " = ($" << price << " - $" << old_avg_price << ") * " << reduction << std::endl;
         } else {
             // Reducing short position: PnL = (avg_short_price - cover_price) * reduction
             pnl = (old_avg_price - price) * reduction;
+            std::cout << "💰 DEBUG: Reducing short position - PnL: $" << pnl 
+                      << " = ($" << old_avg_price << " - $" << price << ") * " << reduction << std::endl;
         }
         
         current_position_.realized_pnl += pnl;
+        std::cout << "💰 DEBUG: Updated realized PnL: $" << current_position_.realized_pnl << std::endl;
     }
     
     // Update net position
@@ -665,20 +756,27 @@ void OrderManager::update_position(quantity_t quantity, price_t price, Side side
     if (new_position == 0) {
         // Position closed - reset average price
         current_position_.avg_price = 0.0;
+        std::cout << "📊 DEBUG: Position closed - avg price reset to 0" << std::endl;
     } else if (old_position == 0) {
         // Opening new position - use trade price
         current_position_.avg_price = price;
+        std::cout << "📊 DEBUG: Opening new position - avg price set to $" << price << std::endl;
     } else if ((old_position > 0 && new_position > 0 && new_position > old_position) ||
                (old_position < 0 && new_position < 0 && std::abs(new_position) > std::abs(old_position))) {
         // Increasing position in same direction - calculate volume-weighted average
         quantity_t total_quantity = std::abs(old_position) + quantity;
         current_position_.avg_price = 
             ((old_avg_price * std::abs(old_position)) + (price * quantity)) / total_quantity;
+        std::cout << "📊 DEBUG: Increasing position - new avg price: $" << current_position_.avg_price << std::endl;
     } else if ((old_position > 0 && new_position < 0) || (old_position < 0 && new_position > 0)) {
         // Position flipped - set average price to trade price for the new position
         current_position_.avg_price = price;
+        std::cout << "📊 DEBUG: Position flipped - avg price set to $" << price << std::endl;
     }
     // For position reduction (but not flip), keep the original average price
+    
+    std::cout << "📊 DEBUG: Final position: " << current_position_.net_position 
+              << " Final avg price: $" << current_position_.avg_price << std::endl;
 }
 
 double OrderManager::calculate_unrealized_pnl(price_t current_mid_price) const {
