@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# HFT System Runner Script
-# This script runs the complete HFT system with real market data
+# HFT System Perf Profiling Script
+# This script runs the HFT system with perf profiling
 
-echo "🚀 Starting HFT Trading System..."
-echo "=================================="
+echo "🔍 Starting HFT System with Perf Profiling..."
+echo "=============================================="
 
 # Check if we're in the right directory
 if [ ! -f "cpp/bin/hft_system" ]; then
@@ -22,15 +22,6 @@ if [ -f ".env" ]; then
     set +a  # turn off automatic export
 fi
 
-# Check if API credentials are available
-if [ -z "$HFT_API_KEY" ] && [ -z "$COINBASE_API_KEY" ]; then
-    echo "⚠️  Warning: No API credentials found in environment variables"
-    echo "   The system will run in simulation mode"
-    echo "   Set HFT_API_KEY and HFT_SECRET_KEY for live trading"
-else
-    echo "✅ API credentials loaded successfully"
-fi
-
 # Set default environment variables if not set
 export HFT_API_KEY=${HFT_API_KEY:-$COINBASE_API_KEY}
 export HFT_SECRET_KEY=${HFT_SECRET_KEY:-$COINBASE_API_SECRET}
@@ -45,12 +36,16 @@ echo "   • Latency Tracker (Microsecond precision)"
 echo "   • Memory Pool (Zero allocations)"
 echo ""
 
-# Run the HFT system
-echo "🔄 Starting system... Press Ctrl+C to stop"
-echo "=========================================="
+# Run the HFT system with perf profiling
+echo "🔄 Starting system with perf profiling... Press Ctrl+C to stop"
+echo "=============================================================="
 
-# Run the C++ HFT system
-./cpp/bin/hft_system
+# Use the available perf version
+/usr/lib/linux-tools/6.8.0-71-generic/perf record -g -F 99 ./cpp/bin/hft_system
 
 echo ""
-echo "✅ HFT System shutdown complete!" 
+echo "✅ Perf profiling complete!"
+echo "📊 To analyze the results, run:"
+echo "   perf report -g"
+echo "   or"
+echo "   perf report --stdio" 

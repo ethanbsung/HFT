@@ -271,14 +271,26 @@ bool OrderManager::cancel_order(uint64_t order_id) {
     // Don't block cancellation during emergency shutdown - we need to cancel orders!
     
     OrderInfo* order_info = find_order(order_id);
-    if (!order_info) return false;
+    if (!order_info) {
+        std::cout << "❌ DEBUG: Order not found for cancellation - ID: " << order_id << std::endl;
+        return false;
+    }
+    
+    // FIXED: Check if order is already cancelled to prevent duplicate cancellations
+    if (order_info->execution_state == ExecutionState::CANCELLED) {
+        std::cout << "⚠️ DEBUG: Order already cancelled - ID: " << order_id << std::endl;
+        return false;
+    }
     
     // Can only cancel orders that are pending or active
     if (order_info->execution_state == ExecutionState::FILLED ||
-        order_info->execution_state == ExecutionState::CANCELLED ||
         order_info->execution_state == ExecutionState::REJECTED) {
+        std::cout << "❌ DEBUG: Cannot cancel order in state " << static_cast<int>(order_info->execution_state) 
+                  << " - ID: " << order_id << std::endl;
         return false;
     }
+    
+    std::cout << "🔄 DEBUG: Attempting to cancel order ID: " << order_id << std::endl;
     
     // Update order state
     order_info->execution_state = ExecutionState::CANCELLED;
@@ -311,6 +323,9 @@ bool OrderManager::cancel_order(uint64_t order_id) {
     if (order_callback_) {
         order_callback_(*order_info);
     }
+    
+    std::cout << "✅ CANCELLED: " << (order_info->order.side == Side::BUY ? "BID" : "ASK") 
+              << " Order ID: " << order_id << std::endl;
     
     return true;
 }

@@ -202,10 +202,16 @@ int main() {
         
         // Set up callbacks for market data
         market_data_feed.set_book_message_callback([&signal_engine, &orderbook_engine, &latency_tracker](const hft::CoinbaseBookMessage& book_msg) {
-            auto market_data_start = hft::now();
+            // Use arrival time if available, otherwise use current time
+            auto market_data_start = book_msg.arrival_time != hft::timestamp_t{} ? book_msg.arrival_time : hft::now();
+            
+            // Skip latency tracking for the first few messages (connection setup)
+            static int callback_message_count = 0;
+            callback_message_count++;
             
             std::cout << "\n📊 DEBUG: Market data received - " << book_msg.product_id 
-                      << " - " << book_msg.changes.size() << " updates" << std::endl;
+                      << " - " << book_msg.changes.size() << " updates"
+                      << " | Message #" << callback_message_count << (callback_message_count <= 3 ? " (setup - not tracked)" : " (tracked)") << std::endl;
             
             // CRITICAL FIX: Trigger signal engine with updated market data
             auto top_of_book = orderbook_engine.get_top_of_book();
@@ -222,7 +228,19 @@ int main() {
                     auto signal_latency = hft::time_diff_us(signal_start, signal_end);
                     
                     std::cout << "⏱️ DEBUG: Signal generation latency: " << signal_latency.count() << " μs" << std::endl;
-                    latency_tracker.add_latency(hft::LatencyType::TICK_TO_TRADE, signal_latency);
+                    
+                    // Only track latency after the first 3 messages (connection setup)
+                    if (callback_message_count > 3) {
+                        latency_tracker.add_latency(hft::LatencyType::TICK_TO_TRADE, signal_latency);
+                        
+                        // Calculate complete tick-to-trade latency from arrival to signal completion
+                        auto tick_to_trade_end = hft::now();
+                        auto complete_tick_to_trade_latency = hft::time_diff_us(market_data_start, tick_to_trade_end);
+                        std::cout << "⏱️ DEBUG: Complete tick-to-trade latency: " << complete_tick_to_trade_latency.count() << " μs" << std::endl;
+                        latency_tracker.add_latency(hft::LatencyType::TICK_TO_TRADE, complete_tick_to_trade_latency);
+                    } else {
+                        std::cout << "⏱️ DEBUG: Skipping latency tracking for setup message" << std::endl;
+                    }
                 } else {
                     std::cout << "⚠️ WARNING: Crossed market detected - BID: $" 
                               << top_of_book.bid_price << " >= ASK: $" << top_of_book.ask_price 
@@ -236,7 +254,11 @@ int main() {
             auto market_data_end = hft::now();
             auto market_data_latency = hft::time_diff_us(market_data_start, market_data_end);
             std::cout << "⏱️ DEBUG: Total market data processing latency: " << market_data_latency.count() << " μs" << std::endl;
-            latency_tracker.add_latency(hft::LatencyType::MARKET_DATA_PROCESSING, market_data_latency);
+            
+            // Only track latency after the first 3 messages (connection setup)
+            if (callback_message_count > 3) {
+                latency_tracker.add_latency(hft::LatencyType::MARKET_DATA_PROCESSING, market_data_latency);
+            }
         });
         
         // Set up callbacks for trade messages

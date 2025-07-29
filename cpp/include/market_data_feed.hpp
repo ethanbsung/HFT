@@ -70,6 +70,9 @@ struct CoinbaseTradeMessage {
     quantity_t parsed_size;
     Side parsed_side;
     timestamp_t parsed_time;
+    
+    // Real arrival timestamp (captured at WebSocket level)
+    timestamp_t arrival_time;
 };
 
 /**
@@ -84,6 +87,9 @@ struct CoinbaseBookMessage {
     // Parsed values
     timestamp_t parsed_time;
     std::vector<std::tuple<Side, price_t, quantity_t>> parsed_changes;
+    
+    // Real arrival timestamp (captured at WebSocket level)
+    timestamp_t arrival_time;
 };
 
 /**
@@ -310,8 +316,11 @@ private:
     
     // Message processing
     void process_message(const std::string& raw_message);
+    void process_message_with_arrival_time(const std::string& raw_message, timestamp_t arrival_time);
     void handle_trade_message(const std::string& message);
+    void handle_trade_message_with_arrival_time(const std::string& message, timestamp_t arrival_time);
     void handle_book_message(const std::string& message);
+    void handle_book_message_with_arrival_time(const std::string& message, timestamp_t arrival_time);
     void handle_heartbeat_message(const std::string& message);
     void handle_error_message(const std::string& message);
     

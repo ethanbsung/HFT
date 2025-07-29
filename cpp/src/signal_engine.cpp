@@ -215,8 +215,19 @@ void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_pri
     double current_spread_bps = orderbook_engine_->get_spread_bps();
     if (current_spread_bps < target_spread_bps) {
         // If market spread is tighter than our target, use a more competitive spread
-        target_spread_bps = std::max(current_spread_bps * 1.5, config_.min_spread_bps);
+        // FIXED: Be less aggressive to reduce quote churn
+        target_spread_bps = std::max(current_spread_bps * 1.2, config_.min_spread_bps);
         std::cout << "📊 DEBUG: Market spread tight (" << current_spread_bps << " bps) - using competitive spread: " << target_spread_bps << " bps" << std::endl;
+    }
+    
+    // FIXED: Add minimum spread check to prevent excessive quote replacement
+    if (current_spread_bps < 0.5) { // If spread is extremely tight (< 0.5 bps)
+        std::cout << "⚠️ DEBUG: Market spread too tight (" << current_spread_bps << " bps) - skipping quote update" << std::endl;
+        bid_price = 0.0;
+        ask_price = 0.0;
+        bid_size = 0.0;
+        ask_size = 0.0;
+        return;
     }
     
     // Calculate optimal prices with target spread
@@ -421,19 +432,24 @@ void SignalEngine::generate_cancellation_signals(std::vector<TradingSignal>& sig
         return;
     }
     
-    // FIXED: Cancel all existing market making quotes before placing new ones
+    // FIXED: Only cancel quotes that are actually active and not already cancelled
     {
         std::lock_guard<std::mutex> lock(quotes_mutex_);
         for (const auto& [order_id, quote] : active_quotes_) {
-            // Cancel all existing quotes to replace with new ones
-            TradingSignal signal;
-            signal.type = (quote.side == QuoteSide::BID) ? SignalType::CANCEL_BID : SignalType::CANCEL_ASK;
-            signal.order_id = order_id;
-            signal.timestamp = now();
-            signal.reason = "Replacing quote with new market making quote";
-            signals.push_back(signal);
-            std::cout << "🔄 DEBUG: Cancelling existing quote - Order ID: " << order_id 
-                      << " Side: " << (quote.side == QuoteSide::BID ? "BID" : "ASK") << std::endl;
+            // Check if order is still active in orderbook before cancelling
+            if (orderbook_engine_->is_our_order(order_id)) {
+                TradingSignal signal;
+                signal.type = (quote.side == QuoteSide::BID) ? SignalType::CANCEL_BID : SignalType::CANCEL_ASK;
+                signal.order_id = order_id;
+                signal.timestamp = now();
+                signal.reason = "Replacing quote with new market making quote";
+                signals.push_back(signal);
+                std::cout << "🔄 DEBUG: Cancelling existing quote - Order ID: " << order_id 
+                          << " Side: " << (quote.side == QuoteSide::BID ? "BID" : "ASK") << std::endl;
+            } else {
+                // Order is no longer active, remove from tracking
+                std::cout << "🧹 DEBUG: Removing stale quote - ID: " << order_id << std::endl;
+            }
         }
         
         // Clear the active quotes since we're cancelling them all

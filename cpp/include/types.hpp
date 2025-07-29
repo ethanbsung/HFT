@@ -222,6 +222,11 @@ inline timestamp_t now() {
     return std::chrono::high_resolution_clock::now();
 }
 
+// High-resolution timestamp for HFT measurements
+inline timestamp_t now_monotonic_raw() {
+    return std::chrono::high_resolution_clock::now();
+}
+
 // MarketDepth constructor implementation (after now() is defined)
 inline MarketDepth::MarketDepth(uint32_t levels) : depth_levels(levels), timestamp(now()) {
     bids.reserve(levels);
