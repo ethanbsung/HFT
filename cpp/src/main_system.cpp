@@ -14,8 +14,8 @@
 // Global system instance for signal handling
 std::atomic<bool> g_running{true};
 
-void signal_handler() {
-    std::cout << "\n🛑 Shutdown signal received..." << std::endl;
+void signal_handler(int signal_number) {
+    std::cout << "\n🛑 Shutdown signal received (signal " << signal_number << ")..." << std::endl;
     g_running = false;
 }
 

@@ -22,8 +22,8 @@ OBJDIR = obj
 BINDIR = bin
 LIBDIR = lib
 
-# Source files
-SOURCES = $(wildcard $(SRCDIR)/*.cpp)
+# Source files (excluding main_system.cpp from library)
+SOURCES = $(filter-out $(SRCDIR)/main_system.cpp, $(wildcard $(SRCDIR)/*.cpp))
 OBJECTS = $(SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 HEADERS = $(wildcard $(INCDIR)/*.hpp)
 
@@ -85,7 +85,7 @@ MAIN_EXEC = $(BINDIR)/hft_system
 MAIN_OBJECT = $(OBJDIR)/main_system.o
 
 # Test executables
-test: test_data_feed test_orderbook test_latency test_signal_engine
+test: test_data_feed test_orderbook test_latency test_signal_engine test_order_manager
 
 # Main system
 hft_system: $(MAIN_EXEC)
@@ -103,13 +103,18 @@ $(BINDIR)/test_orderbook_engine: $(OBJDIR)/test_orderbook_engine.o $(LIBRARY) | 
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
 
 # Latency tracker tests
-test_latency: $(BINDIR)/test_latency_tracker
-$(BINDIR)/test_latency_tracker: $(OBJDIR)/test_latency_tracker.o $(LIBRARY) | $(BINDIR)
+test_latency: $(BINDIR)/test_latency
+$(BINDIR)/test_latency: $(OBJDIR)/test_latency.o $(LIBRARY) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
 
 # Signal engine tests
 test_signal_engine: $(BINDIR)/test_signal_engine
 $(BINDIR)/test_signal_engine: $(OBJDIR)/test_signal_engine.o $(LIBRARY) | $(BINDIR)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
+
+# Order manager tests
+test_order_manager: $(BINDIR)/test_order_manager
+$(BINDIR)/test_order_manager: $(OBJDIR)/test_order_manager.o $(LIBRARY) | $(BINDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $< -L$(LIBDIR) -lhft_core $(LIBS) $(GTEST_LIBS) -o $@
 
 # Benchmark executable

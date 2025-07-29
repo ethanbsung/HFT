@@ -689,7 +689,7 @@ inline quantity_t SignalEngine::calculate_position_adjusted_size(quantity_t base
     return base_size * adjustment;
 }
 
-inline bool SignalEngine::should_cancel_quote(const MarketMakingQuote& quote, price_t mid_price) const {
+bool SignalEngine::should_cancel_quote(const MarketMakingQuote& quote, price_t mid_price) const {
     if (mid_price <= 0.0) {
         return false;
     }
