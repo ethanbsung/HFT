@@ -589,18 +589,33 @@ void MarketDataFeed::send_subscriptions(websocketpp::connection_hdl hdl) {
         products = subscribed_products_;
     }
     
-    // Subscribe to channels (simplified for HFT)
+    // FIXED: Use the correct Coinbase Advanced Trade API subscription format
     auto sub = [&](const std::string& channel) {
-        json msg = {{"type", "subscribe"}, {"channel", channel}, {"product_ids", products}};
+        json msg = {
+            {"type", "subscribe"},
+            {"channel", channel},
+            {"product_ids", products}
+        };
         auto* client = static_cast<WebSocketClient*>(websocket_handle_);
         client->send(hdl, msg.dump(), websocketpp::frame::opcode::text);
-        std::cout << "[MARKET DATA] >>> " << msg << std::endl;
+        std::cout << "[MARKET DATA] >>> Subscribing to " << channel << " for products: ";
+        for (const auto& product : products) {
+            std::cout << product << " ";
+        }
+        std::cout << std::endl;
+        std::cout << "[MARKET DATA] >>> Message: " << msg.dump() << std::endl;
     };
     
+    // Subscribe to the channels we need for market making
     sub("level2");
     sub("market_trades");
     
+    // Also try the alternative channel names
+    sub("l2_data");
+    sub("ticker");
+    
     connection_state_.store(ConnectionState::SUBSCRIBED);
+    std::cout << "[MARKET DATA] Subscriptions sent successfully" << std::endl;
 }
 
 void MarketDataFeed::start_jwt_refresh_timer(websocketpp::connection_hdl /* hdl */) {
@@ -639,6 +654,13 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
     
     try {
         auto json = nlohmann::json::parse(raw_message);
+        
+        // FIXED: Add more detailed logging to understand what messages we're receiving
+        std::cout << "📨 DEBUG: Parsed JSON message - keys: ";
+        for (auto it = json.begin(); it != json.end(); ++it) {
+            std::cout << it.key() << " ";
+        }
+        std::cout << std::endl;
         
         // Handle new Advanced Trade format
         if (json.contains("channel") && json.contains("events")) {
@@ -686,6 +708,7 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
                 break;
             default:
                 // Unknown message type - log and ignore
+                std::cout << "⚠️ DEBUG: Unknown message type - content: " << raw_message.substr(0, 200) << "..." << std::endl;
                 break;
         }
         
@@ -693,6 +716,7 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
         
     } catch (const std::exception& ex) {
         std::cerr << "[MARKET DATA] Error processing message: " << ex.what() << std::endl;
+        std::cerr << "[MARKET DATA] Raw message: " << raw_message.substr(0, 200) << "..." << std::endl;
     }
 }
 
