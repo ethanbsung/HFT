@@ -3,6 +3,7 @@
 #include <iostream>
 #include <iomanip>
 #include <algorithm>
+#include <random>
 
 namespace hft {
 
@@ -149,7 +150,9 @@ MatchResult OrderBookEngine::add_order(const Order& order, std::vector<TradeExec
     
     // Validate incoming order before acquiring lock
     if (!validate_order(order)) {
-        notify_rejection(order.order_id, "Order validation failed");
+        if (order_manager_) {
+            order_manager_->handle_rejection(order.order_id, "Order validation failed");
+        }
         return MatchResult::REJECTED;
     }
     
@@ -185,20 +188,22 @@ MatchResult OrderBookEngine::add_order(const Order& order, std::vector<TradeExec
             case MatchResult::PARTIAL_FILL:
                 // Order partially filled - add remainder to book
                 if (working_order.remaining_quantity > 0) {
-                    add_to_price_level(get_book_side(working_order.side), 
-                                     working_order.price, working_order);
+                    // CRITICAL FIX: Add to active_orders_ BEFORE add_to_price_level for queue position tracking
                     active_orders_[working_order.order_id] = working_order;
                     order_to_price_[working_order.order_id] = working_order.price;
+                    add_to_price_level(get_book_side(working_order.side), 
+                                     working_order.price, working_order);
                 }
                 final_result = MatchResult::PARTIAL_FILL;
                 break;
                 
             case MatchResult::NO_MATCH:
                 // No match found - add entire order to book
-                add_to_price_level(get_book_side(working_order.side), 
-                                 working_order.price, working_order);
+                // CRITICAL FIX: Add to active_orders_ BEFORE add_to_price_level for queue position tracking
                 active_orders_[working_order.order_id] = working_order;
                 order_to_price_[working_order.order_id] = working_order.price;
+                add_to_price_level(get_book_side(working_order.side), 
+                                 working_order.price, working_order);
                 final_result = MatchResult::NO_MATCH;
                 break;
                 
@@ -231,7 +236,9 @@ MatchResult OrderBookEngine::add_order(const Order& order, std::vector<TradeExec
     
     // Call callbacks AFTER releasing the lock to prevent deadlock
     if (final_result == MatchResult::REJECTED) {
-        notify_rejection(order.order_id, "Order rejected during matching");
+        if (order_manager_) {
+            order_manager_->handle_rejection(order.order_id, "Order rejected during matching");
+        }
     }
     
     if (should_notify_book_update) {
@@ -248,13 +255,17 @@ MatchResult OrderBookEngine::add_order(const Order& order, std::vector<TradeExec
         if (execution.aggressor_order_id == order.order_id) {
             // This order was the aggressor
             bool is_final_fill = (final_result == MatchResult::FULL_FILL);
-            notify_fill(execution.aggressor_order_id, execution.quantity, 
-                       execution.price, is_final_fill);
+            if (order_manager_) {
+                order_manager_->handle_fill(execution.aggressor_order_id, execution.quantity,
+                                           execution.price, execution.timestamp, is_final_fill);
+            }
         }
         
         // Notify about passive order fills
-        notify_fill(execution.passive_order_id, execution.quantity, 
-                   execution.price, true); // Passive fills are always final in this context
+        if (order_manager_) {
+            order_manager_->handle_fill(execution.passive_order_id, execution.quantity,
+                                       execution.price, execution.timestamp, true);
+        }
         
         // Notify trade callback
         notify_trade_execution(execution);
@@ -896,25 +907,14 @@ MatchResult OrderBookEngine::submit_order_from_manager(const Order& order, std::
     if (result != MatchResult::REJECTED) {
         std::lock_guard<std::shared_mutex> lock(our_orders_mutex_);
         our_orders_.insert(order.order_id);
+        
+        // Track queue position for realistic fill simulation
+        track_queue_position(order.order_id, order.price, order.side, order.remaining_quantity);
     }
     
     return result;
 }
 
-void OrderBookEngine::notify_fill(uint64_t order_id, quantity_t fill_qty, 
-                                 price_t fill_price, bool is_final_fill) {
-    // TODO: Notify OrderManager about fill
-    if (order_manager_) {
-        order_manager_->handle_fill(order_id, fill_qty, fill_price, now(), is_final_fill);
-    }
-}
-
-void OrderBookEngine::notify_rejection(uint64_t order_id, const std::string& reason) {
-    // TODO: Notify OrderManager about rejection
-    if (order_manager_) {
-        order_manager_->handle_rejection(order_id, reason);
-    }
-}
 
 // =============================================================================
 // EVENT CALLBACKS (FOR SIGNAL ENGINE)
@@ -1042,15 +1042,11 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
         auto& matching_side = asks_;
         auto it = matching_side.begin();
         
-        std::cout << "[DEBUG] BUY order " << order.order_id << " matching against " << matching_side.size() << " ask levels" << std::endl;
         
         while (it != matching_side.end() && remaining_quantity > 0) {
             price_t level_price = it->first;
             PriceLevel& level = it->second;
             
-            std::cout << "[DEBUG] Processing ask level at $" << level_price 
-                      << " with total_qty=" << level.total_quantity 
-                      << " queue_size=" << level.order_queue.size() << std::endl;
             
             // Check if price is matchable (buy order price >= ask price)
             if (order.price < level_price) {
@@ -1078,9 +1074,6 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
                 quantity_t available_quantity = passive_order.remaining_quantity;
                 quantity_t trade_quantity = std::min(remaining_quantity, available_quantity);
                 
-                std::cout << "[DEBUG] Matching against order " << passive_order_id 
-                          << " available=" << available_quantity 
-                          << " trade_qty=" << trade_quantity << std::endl;
                 
                 if (trade_quantity > 0) {
                     // Create trade execution directly in vector to avoid pool copy overhead
@@ -1262,10 +1255,6 @@ void OrderBookEngine::execute_trade(uint64_t aggressor_id, uint64_t passive_id,
                                    price_t price, quantity_t quantity, Side aggressor_side) {
     // OPTIMIZED IMPLEMENTATION: Execute a trade between two orders
     
-    std::cout << "💰 DEBUG: Executing trade - Aggressor: " << aggressor_id 
-              << " Passive: " << passive_id 
-              << " Price: $" << price << " Qty: " << quantity 
-              << " Side: " << (aggressor_side == Side::BUY ? "BUY" : "SELL") << std::endl;
     
     // Create trade execution directly for better performance
     TradeExecution trade;
@@ -1285,9 +1274,6 @@ void OrderBookEngine::execute_trade(uint64_t aggressor_id, uint64_t passive_id,
         statistics_.last_trade_time = trade.timestamp;
     }
     
-    std::cout << "📊 DEBUG: Trade executed - Trade ID: " << trade.trade_id 
-              << " Total trades: " << statistics_.total_trades 
-              << " Total volume: " << statistics_.total_volume << std::endl;
     
     // Notify callbacks
     if (trade_callback_) {
@@ -1296,14 +1282,10 @@ void OrderBookEngine::execute_trade(uint64_t aggressor_id, uint64_t passive_id,
     
     // Update OrderManager with fills
     if (order_manager_) {
-        std::cout << "📤 DEBUG: Notifying OrderManager of fills..." << std::endl;
         // Notify aggressor
         order_manager_->handle_fill(aggressor_id, quantity, price, trade.timestamp, true);
         // Notify passive order
         order_manager_->handle_fill(passive_id, quantity, price, trade.timestamp, true);
-        std::cout << "✅ DEBUG: OrderManager notified of fills" << std::endl;
-    } else {
-        std::cout << "⚠️ DEBUG: No OrderManager available for trade notification" << std::endl;
     }
     
     // Update last trade price
@@ -1322,23 +1304,44 @@ void OrderBookEngine::notify_matching_performance(const Order& order, double lat
 }
 
 void OrderBookEngine::add_to_price_level(BookSide side, price_t price, const Order& order) {
+    // Calculate queue position BEFORE adding the order (FIFO queue simulation)
+    quantity_t queue_ahead = 0.0;
+    
     // Handle different map types for bids (std::greater) and asks (std::less)
     if (side == BookSide::BID) {
         auto& level = bids_[price];
         if (level.price == 0) {
             level.price = price;
         }
+        
+        // Calculate queue position: we're behind all existing orders at this price level
+        queue_ahead = level.total_quantity;
+        
         level.add_order(order.order_id, order.remaining_quantity);
     } else {
         auto& level = asks_[price];
         if (level.price == 0) {
             level.price = price;
         }
+        
+        // Calculate queue position: we're behind all existing orders at this price level
+        queue_ahead = level.total_quantity;
+        
         level.add_order(order.order_id, order.remaining_quantity);
     }
     
-    // Update tracking maps
+    // Update tracking maps with queue position
     order_to_quantity_[order.order_id] = order.remaining_quantity;
+    
+    // CRITICAL: Store the queue position for this order (FIFO queue simulation)
+    // This mimics the Python execution simulator's queue_ahead calculation
+    auto order_it = active_orders_.find(order.order_id);
+    if (order_it != active_orders_.end()) {
+        order_it->second.queue_ahead = queue_ahead;
+        
+        // Add to queue position tracking for fill simulation with precise queue position
+        track_queue_position_with_exact_position(order.order_id, price, order.side, order.remaining_quantity, queue_ahead);
+    }
 }
 
 void OrderBookEngine::remove_from_price_level(BookSide side, price_t price, 
@@ -1559,83 +1562,9 @@ quantity_t OrderBookEngine::get_quantity_at_price(BookSide side, price_t price) 
 }
 
 // Market data integration methods
-void OrderBookEngine::process_market_data_order(const Order& order) {
-    std::lock_guard<std::mutex> lock(book_mutex_);
-    
-    // Add market data order to our book
-    active_orders_[order.order_id] = order;
-    order_to_price_[order.order_id] = order.price;
-    order_to_quantity_[order.order_id] = order.remaining_quantity;
-    
-    // Add to appropriate side of the book
-    // Handle different map types for bids (std::greater) and asks (std::less)
-    if (order.side == Side::BUY) {
-        bids_[order.price].add_order(order.order_id, order.remaining_quantity);
-    } else {
-        asks_[order.price].add_order(order.order_id, order.remaining_quantity);
-    }
-    
-    // Update best bid/ask
-    update_best_prices();
-    
-    // Notify depth update
-    if (depth_update_callback_) {
-        MarketDepth depth = get_market_depth(10);
-        depth_update_callback_(depth);
-    }
-}
-
-void OrderBookEngine::process_market_data_cancel(uint64_t order_id) {
-    std::lock_guard<std::mutex> lock(book_mutex_);
-    
-    auto order_it = active_orders_.find(order_id);
-    if (order_it == active_orders_.end()) {
-        return; // Order not found
-    }
-    
-    const Order& order = order_it->second;
-    price_t price = order_to_price_[order_id];
-    quantity_t quantity = order_to_quantity_[order_id];
-    
-    // Remove from price level
-    if (order.side == Side::BUY) {
-        auto level_it = bids_.find(price);
-        if (level_it != bids_.end()) {
-            level_it->second.remove_order(quantity);
-            
-            // Remove price level if empty
-            if (level_it->second.total_quantity <= 0) {
-                bids_.erase(level_it);
-            }
-        }
-    } else {
-        auto level_it = asks_.find(price);
-        if (level_it != asks_.end()) {
-            level_it->second.remove_order(quantity);
-            
-            // Remove price level if empty
-            if (level_it->second.total_quantity <= 0) {
-                asks_.erase(level_it);
-            }
-        }
-    }
-    
-    // Clean up tracking
-    active_orders_.erase(order_id);
-    order_to_price_.erase(order_id);
-    order_to_quantity_.erase(order_id);
-    
-    // Update best bid/ask
-    update_best_prices();
-    
-    // Notify depth update  
-    if (depth_update_callback_) {
-        MarketDepth depth = get_market_depth(10);
-        depth_update_callback_(depth);
-    }
-}
 
 void OrderBookEngine::process_market_data_trade(const TradeExecution& trade) {
+    std::cout << "🔥 DEBUG: process_market_data_trade called with trade size=" << trade.quantity << " @ $" << trade.price << std::endl;
     std::lock_guard<std::mutex> lock(book_mutex_);
     
     // Update statistics
@@ -1650,53 +1579,318 @@ void OrderBookEngine::process_market_data_trade(const TradeExecution& trade) {
         trade_callback_(trade);
     }
     
-    // Use actual trade to simulate market orders against our resting orders
-    simulate_market_order_from_trade(trade);
+    std::cout << "📈 REAL TRADE: " << (trade.aggressor_side == Side::BUY ? "BUY" : "SELL") 
+              << " " << trade.quantity << " @ $" << trade.price << std::endl;
+    
+    // QUEUE-BASED FILL SIMULATION: Process fills based on queue position
+    process_fills_from_queue_positions(trade);
+    
+    // Update queue positions for remaining orders
+    update_queue_positions_from_trade(trade);
 }
 
-void OrderBookEngine::simulate_market_order_from_trade(const TradeExecution& trade) {
-    // Skip if no resting orders to match against
-    if (bids_.empty() && asks_.empty()) {
-        return;
+void OrderBookEngine::process_fills_from_queue_positions(const TradeExecution& trade) {
+    // Process fills for all our orders based on their queue positions
+    std::vector<std::pair<uint64_t, quantity_t>> fills_to_process;
+    
+    {
+        std::lock_guard<std::mutex> queue_lock(queue_mutex_);
+        
+        for (auto& [order_id, pos] : queue_positions_) {
+            if (pos.remaining_quantity <= 0.0) {
+                continue; // Skip fully filled orders
+            }
+            
+            quantity_t fill_qty = calculate_fill_from_queue_position(order_id, trade);
+            if (fill_qty > 0.0) {
+                fills_to_process.emplace_back(order_id, fill_qty);
+            }
+        }
     }
     
-    // Determine market order side based on the actual trade
-    // If trade side is BUY, it means someone bought (took liquidity) - simulate a BUY market order
-    // If trade side is SELL, it means someone sold (took liquidity) - simulate a SELL market order
-    Side market_order_side = trade.aggressor_side;
-    quantity_t market_order_qty = trade.quantity;
-    
-    // Process the market order against our resting orders
-    std::vector<TradeExecution> executions;
-    MatchResult result = process_market_order(market_order_side, market_order_qty, executions);
-    
-    if (result == MatchResult::FULL_FILL || result == MatchResult::PARTIAL_FILL) {
-        std::cout << "🎯 MARKET ORDER FROM TRADE: " << (market_order_side == Side::BUY ? "BUY" : "SELL") 
-                  << " " << market_order_qty << " @ market - " << executions.size() << " executions" << std::endl;
-        
-        // Process executions
-        for (const auto& execution : executions) {
-            if (trade_callback_) {
-                trade_callback_(execution);
+    // Process fills outside the queue lock to avoid deadlocks
+    for (const auto& [order_id, fill_qty] : fills_to_process) {
+        auto order_it = active_orders_.find(order_id);
+        if (order_it != active_orders_.end()) {
+            Order& order = order_it->second;
+            
+            // Update order state
+            order.remaining_quantity -= fill_qty;
+            bool is_final_fill = (order.remaining_quantity <= 0.0);
+            
+            // Create trade execution
+            TradeExecution fill_trade;
+            fill_trade.trade_id = next_trade_id_++;
+            fill_trade.aggressor_order_id = trade.aggressor_order_id;
+            fill_trade.passive_order_id = order_id;
+            fill_trade.price = order.price;  // Fill at our order price
+            fill_trade.quantity = fill_qty;
+            fill_trade.aggressor_side = trade.aggressor_side;
+            fill_trade.timestamp = now();
+            
+            std::cout << "✅ FILL: Order " << order_id 
+                      << " filled " << fill_qty << " @ $" << order.price 
+                      << (is_final_fill ? " (COMPLETE)" : " (PARTIAL)") << std::endl;
+            
+            // Notify fill
+            if (order_manager_) {
+                order_manager_->handle_fill(order_id, fill_qty, order.price, fill_trade.timestamp, is_final_fill);
+            }
+            
+            // Update statistics
+            update_statistics(fill_trade);
+            
+            // If fully filled, remove from active orders and queue positions
+            if (is_final_fill) {
+                active_orders_.erase(order_it);
+                std::lock_guard<std::mutex> queue_lock(queue_mutex_);
+                queue_positions_.erase(order_id);
+                
+                std::lock_guard<std::shared_mutex> our_orders_lock(our_orders_mutex_);
+                our_orders_.erase(order_id);
             }
         }
     }
 }
 
-void OrderBookEngine::add_market_maker_order(const Order& order) {
+void OrderBookEngine::simulate_market_order_from_trade(const TradeExecution& trade) {
+    // REAL MARKET DATA APPROACH: Process actual trade to update FIFO queue positions
+    // This mimics the Python execution simulator's _process_trade_update() logic
+    
+    std::cout << "📈 PROCESSING REAL TRADE: " << (trade.aggressor_side == Side::BUY ? "BUY" : "SELL") 
+              << " " << trade.quantity << " @ $" << trade.price << std::endl;
+    
+    // Process all our resting orders to update queue positions based on this real trade
+    std::vector<uint64_t> orders_to_fill;
+    
     {
-        std::unique_lock<std::shared_mutex> lock(our_orders_mutex_);
-        our_orders_.insert(order.order_id);
+        std::lock_guard<std::mutex> lock(book_mutex_);
+        
+        // const double TICK_SIZE = 0.01; // BTC-USD tick size (1 cent) - unused
+        
+        for (auto& [order_id, order] : active_orders_) {
+            // FIXED: Check if this trade crosses our price levels (not just exact matches)
+            bool trade_crosses_order = false;
+            
+            if (order.side == Side::BUY && trade.aggressor_side == Side::SELL) {
+                // Buy order gets filled when someone sells at or below our bid price
+                trade_crosses_order = (trade.price <= order.price);
+            } else if (order.side == Side::SELL && trade.aggressor_side == Side::BUY) {
+                // Sell order gets filled when someone buys at or above our ask price  
+                trade_crosses_order = (trade.price >= order.price);
+            }
+            
+            if (trade_crosses_order) {
+                // CRITICAL LOGIC: Buy orders fill when someone SELLS (takes our bid)
+                // Sell orders fill when someone BUYS (takes our ask)
+                bool trade_affects_order = true;
+                
+                if (trade_affects_order) {
+                    // Update queue position (reduce queue_ahead by trade quantity)
+                    quantity_t old_queue = order.queue_ahead;
+                    quantity_t new_queue = std::max(0.0, order.queue_ahead - trade.quantity);
+                    order.queue_ahead = new_queue;
+                    
+                    std::cout << "📊 QUEUE UPDATE: Order " << order_id 
+                              << " queue: " << old_queue << " → " << new_queue 
+                              << " (trade: " << trade.quantity << ")" << std::endl;
+                    
+                    // Check for fills when queue_ahead reaches 0
+                    if (new_queue <= 0.0 && old_queue > 0.0) {
+                        // Calculate how much volume reached our order
+                        quantity_t volume_that_reached_us = std::max(0.0, trade.quantity - old_queue);
+                        
+                        // We can fill at most our remaining quantity or the volume that reached us
+                        quantity_t fill_qty = std::min(order.remaining_quantity, volume_that_reached_us);
+                        fill_qty = std::max(0.0, fill_qty);
+                        
+                        if (fill_qty > 0.0) {
+                            std::cout << "🎯 FILL CALCULATION: Order " << order_id 
+                                      << " Old queue: " << old_queue 
+                                      << " Trade: " << trade.quantity 
+                                      << " Volume reached us: " << volume_that_reached_us 
+                                      << " Fill qty: " << fill_qty << std::endl;
+                            
+                            // Schedule this order for filling (outside the lock)
+                            orders_to_fill.push_back(order_id);
+                            
+                            // Update order state for partial fills
+                            if (fill_qty < order.remaining_quantity) {
+                                order.remaining_quantity -= fill_qty;
+                                order.queue_ahead = 0.0; // Now at front of queue for remaining quantity
+                                std::cout << "📊 PARTIAL FILL: " << fill_qty << " filled, " 
+                                          << order.remaining_quantity << " remaining" << std::endl;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     
-    // Use the regular add_order method
-    std::vector<TradeExecution> executions;
-    add_order(order, executions);
+    // Process fills outside the lock to avoid deadlocks
+    for (uint64_t order_id : orders_to_fill) {
+        auto order_it = active_orders_.find(order_id);
+        if (order_it != active_orders_.end()) {
+            const auto& order = order_it->second;
+            
+            // Calculate fill quantity again (in case order changed)
+            quantity_t fill_qty = std::min(order.original_quantity - order.remaining_quantity, trade.quantity);
+            fill_qty = std::max(0.0, fill_qty);
+            
+            if (fill_qty > 0.0) {
+                bool is_final_fill = (order.remaining_quantity <= 0.0);
+                
+                std::cout << "💰 TRIGGERING FILL: Order " << order_id 
+                          << " " << (order.side == Side::BUY ? "BUY" : "SELL")
+                          << " " << fill_qty << " @ $" << trade.price 
+                          << " Final: " << (is_final_fill ? "YES" : "NO") << std::endl;
+                
+                // Notify order manager about the fill
+                if (order_manager_) {
+                    order_manager_->handle_fill(order_id, fill_qty, trade.price, now(), is_final_fill);
+                }
+                
+                // Remove completely filled orders
+                if (is_final_fill) {
+                    active_orders_.erase(order_id);
+                    order_to_price_.erase(order_id);
+                    order_to_quantity_.erase(order_id);
+                    
+                    // Remove from our order tracking
+                    {
+                        std::unique_lock<std::shared_mutex> lock(our_orders_mutex_);
+                        our_orders_.erase(order_id);
+                    }
+                }
+            }
+        }
+    }
 }
 
-bool OrderBookEngine::is_our_order(uint64_t order_id) const {
-    std::shared_lock<std::shared_mutex> lock(our_orders_mutex_);
-    return our_orders_.find(order_id) != our_orders_.end();
+
+// =============================================================================
+// REAL MARKET DATA PROCESSING
+// =============================================================================
+
+
+// =============================================================================
+// QUEUE POSITION TRACKING FOR REALISTIC FILLS
+// =============================================================================
+
+void OrderBookEngine::track_queue_position(uint64_t order_id, price_t price, Side side, quantity_t quantity) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    
+    QueuePosition pos;
+    pos.order_id = order_id;
+    pos.price = price;
+    pos.side = side;
+    pos.original_quantity = quantity;
+    pos.remaining_quantity = quantity;
+    pos.entry_time = now();
+    
+    // Estimate initial queue position based on current book depth
+    // In reality, this would be tracked from order book updates
+    // For now, assume we're behind existing liquidity at this price
+    auto top_of_book = get_top_of_book();
+    
+    if (side == Side::BUY && price < top_of_book.bid_price) {
+        // Away from touch - assume some queue ahead
+        pos.queue_ahead = 0.5; // Conservative estimate
+    } else if (side == Side::SELL && price > top_of_book.ask_price) {
+        // Away from touch - assume some queue ahead  
+        pos.queue_ahead = 0.5; // Conservative estimate
+    } else if (side == Side::BUY && price == top_of_book.bid_price) {
+        // At best bid - assume we're behind existing size
+        pos.queue_ahead = top_of_book.bid_quantity * 0.8; // Behind 80% of existing liquidity
+    } else if (side == Side::SELL && price == top_of_book.ask_price) {
+        // At best ask - assume we're behind existing size
+        pos.queue_ahead = top_of_book.ask_quantity * 0.8; // Behind 80% of existing liquidity
+    } else {
+        // Inside spread (aggressive) - higher priority
+        pos.queue_ahead = 0.1; // Very small queue ahead
+    }
+    
+    queue_positions_[order_id] = pos;
+    
+    std::cout << "📊 QUEUE TRACK: Order " << order_id << " " << (side == Side::BUY ? "BID" : "ASK") 
+              << " $" << price << " x " << quantity << " queue_ahead=" << pos.queue_ahead << std::endl;
+}
+
+void OrderBookEngine::track_queue_position_with_exact_position(uint64_t order_id, price_t price, Side side, quantity_t quantity, quantity_t exact_queue_ahead) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    
+    QueuePosition pos;
+    pos.order_id = order_id;
+    pos.price = price;
+    pos.side = side;
+    pos.original_quantity = quantity;
+    pos.remaining_quantity = quantity;
+    pos.entry_time = now();
+    pos.queue_ahead = exact_queue_ahead; // Use the exact queue position calculated
+    
+    queue_positions_[order_id] = pos;
+    
+    std::cout << "🎯 PRECISE QUEUE TRACK: Order " << order_id << " " << (side == Side::BUY ? "BID" : "ASK") 
+              << " $" << price << " x " << quantity << " queue_ahead=" << pos.queue_ahead << std::endl;
+}
+
+void OrderBookEngine::update_queue_positions_from_trade(const TradeExecution& trade) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    
+    for (auto& [order_id, pos] : queue_positions_) {
+        // Only update orders on the same side and price as the trade
+        if ((pos.side == Side::BUY && trade.aggressor_side == Side::SELL && trade.price <= pos.price) ||
+            (pos.side == Side::SELL && trade.aggressor_side == Side::BUY && trade.price >= pos.price)) {
+            
+            // Reduce queue ahead by the trade size
+            if (pos.queue_ahead > 0.0) {
+                double queue_reduction = std::min(pos.queue_ahead, trade.quantity);
+                pos.queue_ahead -= queue_reduction;
+                
+            }
+        }
+    }
+}
+
+quantity_t OrderBookEngine::calculate_fill_from_queue_position(uint64_t order_id, const TradeExecution& trade) {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    
+    auto it = queue_positions_.find(order_id);
+    if (it == queue_positions_.end()) {
+        return 0.0; // Order not tracked
+    }
+    
+    QueuePosition& pos = it->second;
+    
+    // Check if trade would cross this order
+    bool crosses = false;
+    if (pos.side == Side::BUY && trade.aggressor_side == Side::SELL) {
+        crosses = (trade.price <= pos.price);
+    } else if (pos.side == Side::SELL && trade.aggressor_side == Side::BUY) {
+        crosses = (trade.price >= pos.price);
+    }
+    
+    if (!crosses) {
+        return 0.0; // No fill - trade doesn't cross our order
+    }
+    
+    // Calculate fill based on queue position
+    double available_to_fill = trade.quantity - pos.queue_ahead;
+    
+    if (available_to_fill <= 0.0) {
+        return 0.0; // No fill - trade consumed by queue ahead
+    }
+    
+    // Partial or full fill
+    double fill_quantity = std::min(available_to_fill, pos.remaining_quantity);
+    
+    
+    // Update position
+    pos.remaining_quantity -= fill_quantity;
+    pos.queue_ahead = 0.0; // Now at front of queue for remaining quantity
+    
+    return fill_quantity;
 }
 
 } // namespace hft

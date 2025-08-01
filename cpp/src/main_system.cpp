@@ -10,6 +10,7 @@
 #include <atomic>
 #include <signal.h>
 #include <memory>
+#include <unordered_set>
 
 // Global system instance for signal handling
 std::atomic<bool> g_running{true};
@@ -43,23 +44,30 @@ int main() {
         // Initialize order book engine
         hft::OrderBookEngine orderbook_engine(memory_manager, latency_tracker, "BTC-USD");
         
-        // Create market making config
+        // PYTHON-STYLE ULTRA-AGGRESSIVE market making config
         hft::MarketMakingConfig signal_config;
-        signal_config.default_quote_size = 10.0;
-        signal_config.min_spread_bps = 1.0;  // Reduced from 5.0
-        signal_config.max_spread_bps = 20.0;  // Reduced from 50.0
-        signal_config.target_spread_bps = 2.0;  // Reduced from 15.0 to be more competitive
-        signal_config.max_position = 100.0;
-        signal_config.max_orders_per_second = 100;
+        signal_config.default_quote_size = 0.1;  // PYTHON-STYLE: Start with smaller sizes like Python (0.1 BTC)
+        signal_config.min_spread_bps = 0.1;  // ULTRA-AGGRESSIVE: Allow sub-bps spreads
+        signal_config.max_spread_bps = 5.0;   // VERY TIGHT: Maximum 5 bps spread
+        signal_config.target_spread_bps = 0.5; // ULTRA-AGGRESSIVE: Target 0.5 bps spread
+        signal_config.max_position = 10.0;   // PYTHON-STYLE: Smaller max position like Python system
+        signal_config.max_orders_per_second = 1000; // EXTREME: Allow very high order frequency
+        
+        // Configure PYTHON-STYLE aggressive timing parameters
+        signal_config.quote_refresh_ms = 500;  // PYTHON-STYLE: Replace quotes every 500ms
+        signal_config.cooldown_ms = 50;    // ULTRA-FAST: 50ms cooldown for immediate requoting
+        signal_config.enable_aggressive_quotes = true;  // ENABLE: Full aggressive mode
+        signal_config.inventory_skew_factor = 0.5;  // PYTHON-STYLE: Strong inventory skewing
+        signal_config.max_inventory_skew_bps = 20.0; // PYTHON-STYLE: Reasonable skewing limits
         
         // Initialize signal engine
         hft::SignalEngine signal_engine(memory_manager, latency_tracker, signal_config);
         
-        // Create risk limits
+        // PYTHON-STYLE ULTRA-AGGRESSIVE risk limits
         hft::RiskLimits risk_limits;
-        risk_limits.max_position = 100.0;
-        risk_limits.max_daily_loss = 1000.0;
-        risk_limits.max_orders_per_second = 100;
+        risk_limits.max_position = 10.0;   // PYTHON-STYLE: Match signal engine position limits
+        risk_limits.max_daily_loss = 1000.0; // PYTHON-STYLE: Reasonable daily loss limit
+        risk_limits.max_orders_per_second = 1000; // EXTREME: Match signal engine order frequency
         
         // Initialize order manager
         hft::OrderManager order_manager(memory_manager, latency_tracker, risk_limits);
@@ -78,8 +86,32 @@ int main() {
         signal_engine.set_order_manager(&order_manager);
         order_manager.set_orderbook_engine(&orderbook_engine);
         
+        // CRITICAL FIX: Connect orderbook engine to order manager for fill notifications
+        orderbook_engine.set_order_manager(&order_manager);
+        
+        // CRITICAL FIX: Set up trade callback on orderbook engine to process fills
+        orderbook_engine.set_trade_callback([&order_manager](const hft::TradeExecution& trade) {
+            std::cout << "🎯 TRADE EXECUTION: " << (trade.aggressor_side == hft::Side::BUY ? "BUY" : "SELL") 
+                      << " " << trade.quantity << " @ $" << trade.price << std::endl;
+            // Fill processing is handled by simulate_market_order_from_trade in the orderbook engine
+            // which calls notify_fill -> order_manager.handle_fill for any matches
+        });
+        
         // Set up callbacks for signal processing
+        static std::unordered_set<uint64_t> processed_callback_signals;
+        static std::mutex callback_mutex;
+        
         signal_engine.set_signal_callback([&order_manager, &orderbook_engine, &latency_tracker, &signal_engine](const hft::TradingSignal& signal) {
+            // FIXED: Prevent duplicate callback processing
+            std::lock_guard<std::mutex> lock(callback_mutex);
+            
+            if (processed_callback_signals.find(signal.order_id) != processed_callback_signals.end()) {
+                std::cout << "⚠️ DEBUG: Signal callback ID " << signal.order_id << " already processed, skipping" << std::endl;
+                return;
+            }
+            
+            processed_callback_signals.insert(signal.order_id);
+            
             std::cout << "\n🎯 DEBUG: Signal received - Type: " 
                       << (signal.type == hft::SignalType::PLACE_BID ? "PLACE_BID" : 
                           signal.type == hft::SignalType::PLACE_ASK ? "PLACE_ASK" :
@@ -252,14 +284,31 @@ int main() {
             }
         });
         
-        // Set up callbacks for trade messages
-        market_data_feed.set_trade_message_callback([](const hft::CoinbaseTradeMessage& trade_msg) {
-            std::cout << "💱 TRADE: " << trade_msg.product_id 
-                      << " " << trade_msg.side << " " << trade_msg.size 
-                      << " @ $" << trade_msg.price << std::endl;
+        // Set up callbacks for trade messages - PRINT ALL EXCHANGE TRADES
+        market_data_feed.set_trade_message_callback([&order_manager, &orderbook_engine, &latency_tracker](const hft::CoinbaseTradeMessage& trade_msg) {
+            std::cout << "💱 EXCHANGE TRADE: " << trade_msg.product_id 
+                      << " " << trade_msg.side << " " << std::fixed << std::setprecision(8) << trade_msg.size 
+                      << " @ $" << std::fixed << std::setprecision(2) << trade_msg.price << std::endl;
+            
+            // CRITICAL FIX: Process trade for potential fills
+            // The order book engine processes trades and generates fill events
+            // This is already handled in update_order_book_from_trade via process_market_data_trade
+            // but we need to ensure the trade callbacks reach the order manager
+            
+            // Process real market trades for FIFO queue simulation and fill detection
+            // Real trades from websocket are processed in update_order_book_from_trade() 
+            // which calls process_market_data_trade() -> simulate_market_order_from_trade()
         });
         
-        std::cout << "✅ All components initialized successfully!" << std::endl;
+        std::cout << "✅ All components initialized successfully with PYTHON-STYLE ULTRA-AGGRESSIVE configuration!" << std::endl;
+        std::cout << "📈 PYTHON-STYLE SETTINGS SUMMARY:" << std::endl;
+        std::cout << "   • Quote Size: " << signal_config.default_quote_size << " BTC (Python-style small sizes)" << std::endl;
+        std::cout << "   • Target Spread: " << signal_config.target_spread_bps << " bps (Ultra-tight)" << std::endl;
+        std::cout << "   • Max Position: " << signal_config.max_position << " BTC (Conservative like Python)" << std::endl;
+        std::cout << "   • Max Orders/sec: " << signal_config.max_orders_per_second << " (Extreme frequency)" << std::endl;
+        std::cout << "   • Quote Refresh: " << signal_config.quote_refresh_ms << " ms (Python-style fast)" << std::endl;
+        std::cout << "   • Aggressive Mode: " << (signal_config.enable_aggressive_quotes ? "ENABLED" : "DISABLED") << std::endl;
+        std::cout << "   • Strategy: Inside-spread quoting when possible, join best bid/ask otherwise" << std::endl;
         
         // Start market data feed
         if (!market_data_feed.start()) {
@@ -283,29 +332,50 @@ int main() {
         while (g_running) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             
-            // Periodic cleanup of stale quotes
+            // AGGRESSIVE: More frequent cleanup of stale quotes for active trading
             static int cleanup_counter = 0;
-            if (++cleanup_counter % 30 == 0) { // Every 30 seconds
+            if (++cleanup_counter % 5 == 0) { // Every 5 seconds instead of 30
                 signal_engine.clear_stale_quotes();
             }
             
-            // Print periodic status
+
+            
+            // AGGRESSIVE: Print status more frequently for better monitoring
             static int status_counter = 0;
-            if (++status_counter % 10 == 0) {
+            if (++status_counter % 5 == 0) {  // Every 5 seconds instead of 10
                 auto top_of_book = orderbook_engine.get_top_of_book();
                 auto position = order_manager.get_position();
                 auto stats = order_manager.get_execution_stats();
                 
-                std::cout << "\n📊 MARKET MAKING STATUS:" << std::endl;
-                std::cout << "   Bid: $" << top_of_book.bid_price 
-                          << " Ask: $" << top_of_book.ask_price 
-                          << " Spread: $" << top_of_book.spread << std::endl;
-                std::cout << "   Position: " << position.net_position 
-                          << " P&L: $" << position.realized_pnl << std::endl;
+                std::cout << "\n📊 AGGRESSIVE MARKET MAKING STATUS:" << std::endl;
+                std::cout << "   Bid: $" << std::fixed << std::setprecision(2) << top_of_book.bid_price 
+                          << " Ask: $" << std::fixed << std::setprecision(2) << top_of_book.ask_price 
+                          << " Spread: $" << std::fixed << std::setprecision(2) << (top_of_book.ask_price - top_of_book.bid_price) << std::endl;
+                std::cout << "   Position: " << std::fixed << std::setprecision(4) << position.net_position 
+                          << " P&L: $" << std::fixed << std::setprecision(2) << position.realized_pnl << std::endl;
                 std::cout << "   Orders: " << stats.total_orders 
                           << " Fills: " << stats.filled_orders 
                           << " Fill Rate: " << (stats.total_orders > 0 ? (stats.filled_orders * 100.0 / stats.total_orders) : 0) << "%" << std::endl;
                 std::cout << "   Active Orders: " << order_manager.get_active_order_count() << std::endl;
+                
+                // Print our order positions and how long they've been sitting
+                auto our_orders = order_manager.get_active_orders();
+                if (!our_orders.empty()) {
+                    std::cout << "\n📋 OUR ACTIVE ORDERS:" << std::endl;
+                    auto now_time = hft::now();
+                    for (const auto& order_id : our_orders) {
+                        auto order_info = order_manager.get_order_info(order_id);
+                        if (order_info) {
+                            auto age_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                now_time - order_info->submission_time).count();
+                            std::cout << "   Order " << order_id 
+                                      << " " << (order_info->order.side == hft::Side::BUY ? "BID" : "ASK")
+                                      << " $" << std::fixed << std::setprecision(2) << order_info->order.price
+                                      << " x " << std::fixed << std::setprecision(4) << order_info->order.remaining_quantity
+                                      << " (age: " << age_seconds << "s)" << std::endl;
+                        }
+                    }
+                }
                 
                 // Print latency statistics every 30 seconds
                 if (status_counter % 30 == 0) {

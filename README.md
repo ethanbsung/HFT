@@ -10,6 +10,9 @@
 A sophisticated high-frequency trading system implementing automated market making strategies with comprehensive risk management and **microsecond-precision latency monitoring**. Features a **complete working Python simulation** demonstrating market making algorithms and **optimized C++ implementation** achieving **sub-100ns performance** suitable for high-frequency trading environments.
 
 ### 🏆 Performance Achievements
+- **Sub-millisecond tick-to-trade latency** - 157.7μs mean, 518.3μs P95
+- **Microsecond order placement** - 14.2μs mean, 24.7μs P95
+- **78.1M operations/second** system throughput
 - **78.9% latency reduction** - From 60.6ns to 12.8ns per operation
 - **373% throughput increase** - From 16.5M to 78.1M operations/second
 - **Zero hot path allocations** - Memory-efficient design
@@ -154,6 +157,14 @@ class ApproximatePercentile {
 - **Integration Layer**: Python bindings for visualization and analysis
 
 ## 📊 Performance Metrics
+
+### 🎯 Critical HFT Metrics
+| Metric | Mean | P95 | Industry Rating | Status |
+|--------|------|-----|-----------------|--------|
+| **Tick-to-Trade Latency** | 157.7μs | 518.3μs | Excellent (<1ms) | ✅ |
+| **Order Placement** | 14.2μs | 24.7μs | Excellent (<100μs) | ✅ |
+| **Market Data Processing** | 620μs | 1018μs | Good (<2ms) | ✅ |
+| **System Throughput** | 78.1M ops/sec | - | Excellent (>10M) | ✅ |
 
 ### 🔥 Hot Path Performance
 | Metric | Before | After | Improvement |

@@ -535,6 +535,9 @@ private:
     mutable std::queue<timestamp_t> recent_signals_;
     mutable std::mutex signal_rate_mutex_;
     
+    // Signal ID tracking
+    std::atomic<uint64_t> next_signal_id_;
+    
     // =========================================================================
     // PRIVATE HELPER METHODS
     // =========================================================================

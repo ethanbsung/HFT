@@ -158,6 +158,39 @@ public:
      */
     void apply_market_data_update(const MarketDepth& update);
     
+    
+    /**
+     * Process actual market trades to determine fills for our orders
+     * This replaces the old probabilistic fill simulation
+     */
+    void process_market_data_trade(const TradeExecution& trade);
+    
+    /**
+     * Queue position tracking for realistic fill simulation
+     */
+    struct QueuePosition {
+        uint64_t order_id;
+        price_t price;
+        Side side;
+        quantity_t original_quantity;
+        quantity_t remaining_quantity;
+        quantity_t queue_ahead;  // Amount in queue ahead of this order
+        timestamp_t entry_time;
+        
+        QueuePosition() : order_id(0), price(0.0), side(Side::BUY), 
+                         original_quantity(0.0), remaining_quantity(0.0), 
+                         queue_ahead(0.0), entry_time() {}
+    };
+    
+    // Queue position tracking
+    std::unordered_map<uint64_t, QueuePosition> queue_positions_;
+    std::mutex queue_mutex_;
+    
+    void track_queue_position(uint64_t order_id, price_t price, Side side, quantity_t quantity);
+    void update_queue_positions_from_trade(const TradeExecution& trade);
+    quantity_t calculate_fill_from_queue_position(uint64_t order_id, const TradeExecution& trade);
+    void process_fills_from_queue_positions(const TradeExecution& trade);
+    
     /**
      * Reset book to empty state
      */
@@ -188,16 +221,6 @@ public:
      */
     MatchResult submit_order_from_manager(const Order& order, std::vector<TradeExecution>& executions);
     
-    /**
-     * Notify about fill (called by matching engine)
-     */
-    void notify_fill(uint64_t order_id, quantity_t fill_qty, price_t fill_price, 
-                    bool is_final_fill);
-    
-    /**
-     * Notify about rejection
-     */
-    void notify_rejection(uint64_t order_id, const std::string& reason);
     
     // =========================================================================
     // EVENT CALLBACKS (FOR SIGNAL ENGINE)
@@ -234,17 +257,10 @@ public:
      */
     void cleanup_cancelled_orders();
     
-    // Market data integration methods
-    void process_market_data_order(const Order& order);
-    void process_market_data_cancel(uint64_t order_id);
-    void process_market_data_trade(const TradeExecution& trade);
     
     // Simulation methods
     void simulate_market_order_from_trade(const TradeExecution& trade);
     
-    // Market making specific methods
-    void add_market_maker_order(const Order& order);
-    bool is_our_order(uint64_t order_id) const;
     
 private:
     // =========================================================================

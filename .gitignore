@@ -151,3 +151,6 @@ test_data_feed
 cpp/test_signal_engine
 cpp/bin/
 .cursor/
+
+performance_test
+simple_test

@@ -66,6 +66,7 @@ struct PriceLevel {
     PriceLevel() : price(0.0), quantity(0.0), total_quantity(0.0), last_update() {}
     PriceLevel(price_t p, quantity_t q) : price(p), quantity(q), total_quantity(q), last_update() {}
     PriceLevel(price_t p) : price(p), quantity(0.0), total_quantity(0.0), last_update() {}
+    PriceLevel(price_t p, quantity_t q, timestamp_t t) : price(p), quantity(q), total_quantity(q), last_update(t) {}
 
     void add_order(uint64_t order_id, quantity_t qty) {
         order_queue.push(order_id);
@@ -134,11 +135,12 @@ struct TradeExecution {
 struct OrderBookStats {
     uint64_t total_orders_processed;
     uint64_t total_trades;
+    uint64_t total_updates;  // For market data updates
     quantity_t total_volume;
     timestamp_t last_trade_time;
     double avg_spread_bps;
     
-    OrderBookStats() : total_orders_processed(0), total_trades(0), 
+    OrderBookStats() : total_orders_processed(0), total_trades(0), total_updates(0),
                        total_volume(0.0), avg_spread_bps(0.0) {}
 };
 
