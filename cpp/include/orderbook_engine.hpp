@@ -187,6 +187,7 @@ public:
     std::mutex queue_mutex_;
     
     void track_queue_position(uint64_t order_id, price_t price, Side side, quantity_t quantity);
+    void track_queue_position_with_exact_position(uint64_t order_id, price_t price, Side side, quantity_t quantity, quantity_t exact_queue_ahead);
     void update_queue_positions_from_trade(const TradeExecution& trade);
     quantity_t calculate_fill_from_queue_position(uint64_t order_id, const TradeExecution& trade);
     void process_fills_from_queue_positions(const TradeExecution& trade);
