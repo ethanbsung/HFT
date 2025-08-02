@@ -642,9 +642,7 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
         latency_tracker_.add_latency_fast_path(LatencyType::MARKET_DATA_PROCESSING, to_microseconds(network_to_processing_latency));
     }
     
-    std::cout << "📨 DEBUG: process_message_with_arrival_time called with message length: " << raw_message.length() 
-              << " | Network-to-processing latency: " << to_microseconds(network_to_processing_latency) << " μs"
-              << " | Message #" << message_count << (message_count <= 3 ? " (setup - not tracked)" : " (tracked)") << std::endl;
+    // Message #" << message_count << " (" << raw_message.length() << " bytes)
     
     // Update received message count
     {
@@ -656,21 +654,17 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
         auto json = nlohmann::json::parse(raw_message);
         
         // FIXED: Add more detailed logging to understand what messages we're receiving
-        std::cout << "📨 DEBUG: Parsed JSON message - keys: ";
-        for (auto it = json.begin(); it != json.end(); ++it) {
-            std::cout << it.key() << " ";
-        }
-        std::cout << std::endl;
+        // Parsed JSON with " << json.size() << " fields"
         
         // Handle new Advanced Trade format
         if (json.contains("channel") && json.contains("events")) {
             std::string channel = json["channel"].get<std::string>();
-            std::cout << "📨 DEBUG: Received message on channel: " << channel << std::endl;
+            // Received " << channel << " message"
             
             if (channel == "market_trades") {
                 handle_trade_message_with_arrival_time(raw_message, arrival_time);
             } else if (channel == "level2" || channel == "l2_data") {
-                std::cout << "📊 DEBUG: Processing level2/l2_data message" << std::endl;
+                // Processing orderbook data
                 handle_book_message_with_arrival_time(raw_message, arrival_time);
             } else if (channel == "ticker") {
                 // Handle ticker messages if needed
@@ -708,7 +702,7 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
                 break;
             default:
                 // Unknown message type - log and ignore
-                std::cout << "⚠️ DEBUG: Unknown message type - content: " << raw_message.substr(0, 200) << "..." << std::endl;
+//                 std::cout << "⚠️ DEBUG: Unknown message type - content: " << raw_message.substr(0, 200) << "..." << std::endl;
                 break;
         }
         
@@ -821,16 +815,14 @@ void MarketDataFeed::update_order_book_from_l2update_fast(Side side, double pric
     // FIXED: Use real market data processing instead of synthetic orders
     // This processes actual Coinbase L2 order book updates
     
-    std::cout << "📊 DEBUG: L2 Update - " << (side == Side::BUY ? "BID" : "ASK") 
-              << " $" << price << " size: " << size << std::endl;
+    // L2 Update processing
     
     // Note: Level updates are handled through the regular order book interface
     // MarketDataFeed should focus on data processing, not direct book manipulation
     
     // Trigger market data update callback to signal engine
     auto top_of_book = order_book_.get_top_of_book();
-    std::cout << "📊 DEBUG: Updated top of book - Bid: $" << top_of_book.bid_price 
-              << " Ask: $" << top_of_book.ask_price << std::endl;
+    // Top of book updated
 }
 
 void MarketDataFeed::handle_trade_message_with_arrival_time(const std::string& message, timestamp_t arrival_time) {
@@ -851,8 +843,7 @@ void MarketDataFeed::handle_trade_message_with_arrival_time(const std::string& m
         latency_tracker_.add_latency_fast_path(LatencyType::MARKET_DATA_PROCESSING, to_microseconds(total_processing_latency));
     }
     
-    std::cout << "📊 DEBUG: Trade processing latency: " << to_microseconds(total_processing_latency) << " μs"
-              << " | Message #" << trade_message_count << (trade_message_count <= 3 ? " (setup - not tracked)" : " (tracked)") << std::endl;
+    // Trade latency: " << to_microseconds(total_processing_latency) << "μs"
     
     update_order_book_from_trade(trade);
     
@@ -897,8 +888,7 @@ void MarketDataFeed::handle_book_message_with_arrival_time(const std::string& me
         latency_tracker_.add_latency_fast_path(LatencyType::MARKET_DATA_PROCESSING, to_microseconds(total_processing_latency));
     }
     
-    std::cout << "📊 DEBUG: Book processing latency: " << to_microseconds(total_processing_latency) << " μs"
-              << " | Message #" << book_message_count << (book_message_count <= 3 ? " (setup - not tracked)" : " (tracked)") << std::endl;
+    // Book latency: " << to_microseconds(total_processing_latency) << "μs"
     
     if (book.type == "snapshot") {
         update_order_book_from_snapshot(book);

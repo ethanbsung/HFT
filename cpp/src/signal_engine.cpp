@@ -94,20 +94,20 @@ SignalEngine::~SignalEngine() {
 // =============================================================================
 
 std::vector<TradingSignal> SignalEngine::generate_trading_signals() {
-    std::cout << "🎯 DEBUG: generate_trading_signals() called" << std::endl;
+    // Generate trading signals based on market data
     
     // Check destruction flag first - if we're destroying, don't do anything
     if (is_destroying_.load()) {
-        std::cout << "❌ DEBUG: Signal engine is being destroyed" << std::endl;
+        // Engine shutting down
         return {};
     }
     
     if (!is_running_.load() || should_stop_.load()) {
-        std::cout << "❌ DEBUG: Signal engine not running or stopping in generate_trading_signals" << std::endl;
+        // Engine stopped
         return {};
     }
     
-    std::cout << "\n🎯 DEBUG: Generating trading signals..." << std::endl;
+    // Calculating optimal quotes based on market conditions
     
     // TEMPORARILY DISABLED: ScopedLatencyMeasurement to isolate segmentation fault
     // std::unique_ptr<ScopedLatencyMeasurement> latency_measurement;
@@ -119,27 +119,25 @@ std::vector<TradingSignal> SignalEngine::generate_trading_signals() {
     
     // Get current market state from OrderBookEngine - FIXED: Add null check
     if (!orderbook_engine_) {
-        std::cout << "❌ DEBUG: No OrderBookEngine available" << std::endl;
+        // No OrderBookEngine available
         return {};
     }
     
     auto top_of_book = orderbook_engine_->get_top_of_book();
-    std::cout << "📊 DEBUG: Market state - Bid: $" << top_of_book.bid_price 
-              << " Ask: $" << top_of_book.ask_price 
-              << " Mid: $" << top_of_book.mid_price << std::endl;
+    // Market: Bid=$" << top_of_book.bid_price << " Ask=$" << top_of_book.ask_price
     
     // FIXED: Relax validation to allow signal generation even with imperfect market data
     if (top_of_book.bid_price <= 0.0 && top_of_book.ask_price <= 0.0) {
-        std::cout << "❌ DEBUG: No valid market data - no signals generated" << std::endl;
+        // No valid market data
         return {};
     }
     
     // FIXED: Allow crossed markets temporarily - the orderbook will handle this
     if (top_of_book.bid_price > 0.0 && top_of_book.ask_price > 0.0 && top_of_book.bid_price >= top_of_book.ask_price) {
-        std::cout << "⚠️ DEBUG: Crossed market detected but proceeding with signal generation" << std::endl;
+//         std::cout << "⚠️ DEBUG: Crossed market detected but proceeding with signal generation" << std::endl;
     }
     
-    std::cout << "✅ DEBUG: Market data valid - calculating optimal quotes" << std::endl;
+    // Calculating optimal quotes
     
     // Calculate optimal quotes
     price_t bid_price, ask_price;
@@ -147,7 +145,7 @@ std::vector<TradingSignal> SignalEngine::generate_trading_signals() {
     
     calculate_optimal_quotes(bid_price, ask_price, bid_size, ask_size);
     
-    std::cout << "📈 DEBUG: Optimal quotes calculated:" << std::endl;
+//     std::cout << "📈 DEBUG: Optimal quotes calculated:" << std::endl;
     std::cout << "   Bid: $" << bid_price << " x " << bid_size << std::endl;
     std::cout << "   Ask: $" << ask_price << " x " << ask_size << std::endl;
     std::cout << "   Market Bid: $" << top_of_book.bid_price << " Market Ask: $" << top_of_book.ask_price << std::endl;
@@ -166,7 +164,7 @@ std::vector<TradingSignal> SignalEngine::generate_trading_signals() {
     // Apply rate limiting - FIXED: Only if we have signals
     if (!signals.empty()) {
         apply_rate_limiting(signals);
-        std::cout << "📊 DEBUG: After rate limiting: " << signals.size() << " signals" << std::endl;
+            // Rate limited: " << signals.size() << " signals
     }
     
     // Track signal generation - FIXED: Add destruction check
@@ -177,14 +175,14 @@ std::vector<TradingSignal> SignalEngine::generate_trading_signals() {
         }
     }
     
-    std::cout << "✅ DEBUG: Signal generation complete" << std::endl;
+    // Signal generation complete
     return signals;
 }
 
 void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_price,
                                           quantity_t& bid_size, quantity_t& ask_size) {
     if (!orderbook_engine_) {
-        std::cout << "❌ DEBUG: No OrderBookEngine for quote calculation" << std::endl;
+//         std::cout << "❌ DEBUG: No OrderBookEngine for quote calculation" << std::endl;
         return;
     }
     
@@ -192,7 +190,7 @@ void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_pri
     price_t mid_price = top_of_book.mid_price;
     double spread_bps = orderbook_engine_->get_spread_bps();
     
-    std::cout << "📊 DEBUG: Quote calculation inputs:" << std::endl;
+//     std::cout << "📊 DEBUG: Quote calculation inputs:" << std::endl;
     std::cout << "   Mid Price: $" << mid_price << std::endl;
     std::cout << "   Current Spread: " << spread_bps << " bps" << std::endl;
     std::cout << "   Target Spread: " << config_.target_spread_bps << " bps" << std::endl;
@@ -208,12 +206,12 @@ void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_pri
             // Use a reasonable default price for BTC
             mid_price = 118000.0; // Default BTC price
         }
-        std::cout << "⚠️ DEBUG: Using fallback mid price: $" << mid_price << std::endl;
+//         std::cout << "⚠️ DEBUG: Using fallback mid price: $" << mid_price << std::endl;
     }
     
     // FIXED: Remove crossed market check that was preventing quote generation
     if (top_of_book.bid_price > 0.0 && top_of_book.ask_price > 0.0 && top_of_book.bid_price >= top_of_book.ask_price) {
-        std::cout << "⚠️ DEBUG: Crossed market detected but proceeding with quote calculation" << std::endl;
+//         std::cout << "⚠️ DEBUG: Crossed market detected but proceeding with quote calculation" << std::endl;
     }
     
     // PYTHON-STYLE AGGRESSIVE QUOTING: Place orders very close to market
@@ -225,20 +223,20 @@ void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_pri
     if (current_spread_bps > 5.0) { // If spread > 5 bps, we can be aggressive
         // Quote 1 tick inside best bid/ask (like your Python system)
         target_spread_bps = std::max(1.0, current_spread_bps * 0.1); // 1 bps minimum
-        std::cout << "📊 DEBUG: INSIDE SPREAD quoting: " << target_spread_bps << " bps (market: " << current_spread_bps << " bps)" << std::endl;
+//         std::cout << "📊 DEBUG: INSIDE SPREAD quoting: " << target_spread_bps << " bps (market: " << current_spread_bps << " bps)" << std::endl;
     } else if (current_spread_bps > 2.0) {
         // Tight spread - join the best bid/ask
         target_spread_bps = std::max(0.5, current_spread_bps * 0.2);
-        std::cout << "📊 DEBUG: JOIN BEST quoting: " << target_spread_bps << " bps (market: " << current_spread_bps << " bps)" << std::endl;
+//         std::cout << "📊 DEBUG: JOIN BEST quoting: " << target_spread_bps << " bps (market: " << current_spread_bps << " bps)" << std::endl;
     } else {
         // Very tight market - use minimal spread
         target_spread_bps = std::max(0.1, current_spread_bps * 0.5);
-        std::cout << "📊 DEBUG: MINIMAL SPREAD quoting: " << target_spread_bps << " bps (market: " << current_spread_bps << " bps)" << std::endl;
+//         std::cout << "📊 DEBUG: MINIMAL SPREAD quoting: " << target_spread_bps << " bps (market: " << current_spread_bps << " bps)" << std::endl;
     }
     
     // FIXED: Remove minimum spread check that was preventing quote generation
     if (current_spread_bps > 0.0 && current_spread_bps < 0.5) { // If spread is extremely tight (< 0.5 bps)
-        std::cout << "⚠️ DEBUG: Market spread tight (" << current_spread_bps << " bps) but proceeding with quotes" << std::endl;
+//         std::cout << "⚠️ DEBUG: Market spread tight (" << current_spread_bps << " bps) but proceeding with quotes" << std::endl;
     }
     
     // PYTHON-STYLE COMPETITIVE PRICING: Quote at or inside best bid/ask
@@ -252,29 +250,29 @@ void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_pri
             // Wide spread: Quote 1 tick inside best bid/ask (improve the market)
             bid_price = top_of_book.bid_price + tick_size;
             ask_price = top_of_book.ask_price - tick_size;
-            std::cout << "📊 DEBUG: INSIDE SPREAD quotes - Bid: $" << bid_price << " Ask: $" << ask_price << std::endl;
+//             std::cout << "📊 DEBUG: INSIDE SPREAD quotes - Bid: $" << bid_price << " Ask: $" << ask_price << std::endl;
         } else {
             // Tight spread: JOIN the best bid/ask for maximum fill probability
             // This is much more aggressive than staying away from the market
             bid_price = top_of_book.bid_price;
             ask_price = top_of_book.ask_price;
-            std::cout << "📊 DEBUG: JOIN BEST quotes - Bid: $" << bid_price << " Ask: $" << ask_price << std::endl;
+//             std::cout << "📊 DEBUG: JOIN BEST quotes - Bid: $" << bid_price << " Ask: $" << ask_price << std::endl;
         }
     } else {
         // Fallback to spread-based pricing
         bid_price = mid_price * (1.0 - target_spread_bps / 10000.0);
         ask_price = mid_price * (1.0 + target_spread_bps / 10000.0);
-        std::cout << "📊 DEBUG: FALLBACK spread-based quotes - Bid: $" << bid_price << " Ask: $" << ask_price << std::endl;
+//         std::cout << "📊 DEBUG: FALLBACK spread-based quotes - Bid: $" << bid_price << " Ask: $" << ask_price << std::endl;
     }
     
-    std::cout << "📈 DEBUG: Initial quotes:" << std::endl;
+//     std::cout << "📈 DEBUG: Initial quotes:" << std::endl;
     std::cout << "   Bid: $" << bid_price << std::endl;
     std::cout << "   Ask: $" << ask_price << std::endl;
     
     // Apply inventory skew
     apply_inventory_skew(bid_price, ask_price);
     
-    std::cout << "📊 DEBUG: After inventory skew:" << std::endl;
+//     std::cout << "📊 DEBUG: After inventory skew:" << std::endl;
     std::cout << "   Bid: $" << bid_price << std::endl;
     std::cout << "   Ask: $" << ask_price << std::endl;
     
@@ -284,14 +282,14 @@ void SignalEngine::calculate_optimal_quotes(price_t& bid_price, price_t& ask_pri
         double min_spread_bps = 1.0; // Minimum 1 bps spread
         bid_price = mid_price * (1.0 - min_spread_bps / 10000.0);
         ask_price = mid_price * (1.0 + min_spread_bps / 10000.0);
-        std::cout << "⚠️ DEBUG: Prices crossed - adjusted to minimum spread" << std::endl;
+//         std::cout << "⚠️ DEBUG: Prices crossed - adjusted to minimum spread" << std::endl;
     }
     
     // Calculate sizes
     bid_size = calculate_position_adjusted_size(config_.default_quote_size, QuoteSide::BID);
     ask_size = calculate_position_adjusted_size(config_.default_quote_size, QuoteSide::ASK);
     
-    std::cout << "📊 DEBUG: Final quote sizes:" << std::endl;
+//     std::cout << "📊 DEBUG: Final quote sizes:" << std::endl;
     std::cout << "   Bid Size: " << bid_size << std::endl;
     std::cout << "   Ask Size: " << ask_size << std::endl;
 }
@@ -327,16 +325,15 @@ void SignalEngine::apply_inventory_skew(price_t& bid_price, price_t& ask_price) 
 
 bool SignalEngine::should_place_quote(QuoteSide side, price_t price, quantity_t size) {
     if (!order_manager_) {
-        std::cout << "❌ DEBUG: No OrderManager available for quote validation" << std::endl;
+//         std::cout << "❌ DEBUG: No OrderManager available for quote validation" << std::endl;
         return false;
     }
     
-    std::cout << "🔍 DEBUG: Validating quote - Side: " << (side == QuoteSide::BID ? "BID" : "ASK")
-              << " Price: $" << price << " Size: " << size << std::endl;
+    // Validating quote
     
     // Basic validation
     if (price <= 0.0 || size <= 0.0) {
-        std::cout << "❌ DEBUG: Invalid price or size - price: $" << price << " size: " << size << std::endl;
+//         std::cout << "❌ DEBUG: Invalid price or size - price: $" << price << " size: " << size << std::endl;
         return false;
     }
     
@@ -344,28 +341,27 @@ bool SignalEngine::should_place_quote(QuoteSide side, price_t price, quantity_t 
     auto position = order_manager_->get_position();
     position_t current_position = position.net_position;
     
-    std::cout << "📊 DEBUG: Current position: " << current_position 
-              << " Max position: " << config_.max_position << std::endl;
+    // Position check: " << current_position
     
     // AGGRESSIVE: Allow even more position building - only warn at 90% instead of 80%
     if (side == QuoteSide::BID && current_position >= config_.max_position * 0.9) {
-        std::cout << "⚠️ DEBUG: AGGRESSIVE - Approaching long limit - position: " << current_position << " but allowing quote" << std::endl;
+//         std::cout << "⚠️ DEBUG: AGGRESSIVE - Approaching long limit - position: " << current_position << " but allowing quote" << std::endl;
         // Allow quotes with full size for aggressive trading
     }
     
     if (side == QuoteSide::ASK && current_position <= -config_.max_position * 0.9) {
-        std::cout << "⚠️ DEBUG: AGGRESSIVE - Approaching short limit - position: " << current_position << " but allowing quote" << std::endl;
+//         std::cout << "⚠️ DEBUG: AGGRESSIVE - Approaching short limit - position: " << current_position << " but allowing quote" << std::endl;
         // Allow quotes with full size for aggressive trading
     }
     
     // FIXED: Remove strict position limits that were preventing trading
     if (side == QuoteSide::BID && current_position >= config_.max_position) {
-        std::cout << "❌ DEBUG: Too long to place more bids - position: " << current_position << std::endl;
+//         std::cout << "❌ DEBUG: Too long to place more bids - position: " << current_position << std::endl;
         return false; // Too long to place more bids
     }
     
     if (side == QuoteSide::ASK && current_position <= -config_.max_position) {
-        std::cout << "❌ DEBUG: Too short to place more asks - position: " << current_position << std::endl;
+//         std::cout << "❌ DEBUG: Too short to place more asks - position: " << current_position << std::endl;
         return false; // Too short to place more asks
     }
     
@@ -379,22 +375,21 @@ bool SignalEngine::should_place_quote(QuoteSide side, price_t price, quantity_t 
             recent_signals_.pop();
         }
         
-        std::cout << "📊 DEBUG: Rate limit check - recent signals: " << recent_signals_.size()
-                  << " max per second: " << config_.max_orders_per_second << std::endl;
+        // Rate limit check: " << recent_signals_.size() << " signals"
         
         // FIXED: Allow more signals per second
         if (recent_signals_.size() >= config_.max_orders_per_second * 2) {
-            std::cout << "⚠️ DEBUG: Rate limit approaching but allowing quote" << std::endl;
+//             std::cout << "⚠️ DEBUG: Rate limit approaching but allowing quote" << std::endl;
             // Allow the quote but log the warning
         }
         
         if (recent_signals_.size() >= config_.max_orders_per_second * 3) {
-            std::cout << "❌ DEBUG: Rate limit exceeded" << std::endl;
+//             std::cout << "❌ DEBUG: Rate limit exceeded" << std::endl;
             return false;
         }
     }
     
-    std::cout << "✅ DEBUG: Quote validation passed" << std::endl;
+//     std::cout << "✅ DEBUG: Quote validation passed" << std::endl;
     return true;
 }
 
@@ -430,20 +425,20 @@ void SignalEngine::generate_quote_signals(std::vector<TradingSignal>& signals,
                                         quantity_t bid_size, quantity_t ask_size) {
     // FIXED: Add validation for input parameters
     if (bid_price <= 0.0 || ask_price <= 0.0 || bid_size <= 0.0 || ask_size <= 0.0) {
-        std::cout << "❌ DEBUG: Invalid quote parameters - no signals generated" << std::endl;
+//         std::cout << "❌ DEBUG: Invalid quote parameters - no signals generated" << std::endl;
         return;
     }
     
-    std::cout << "🎯 DEBUG: Generating quote signals..." << std::endl;
+//     std::cout << "🎯 DEBUG: Generating quote signals..." << std::endl;
     
     // SIMPLIFIED QUOTE REPLACEMENT: Always replace quotes that are too old
     bool should_replace_quotes = false;
     {
         std::lock_guard<std::mutex> lock(quotes_mutex_);
-        std::cout << "🔍 DEBUG: active_quotes_.size() = " << active_quotes_.size() << std::endl;
+//         std::cout << "🔍 DEBUG: active_quotes_.size() = " << active_quotes_.size() << std::endl;
         
         if (!active_quotes_.empty()) {
-            std::cout << "🔍 DEBUG: Checking existing quotes for replacement..." << std::endl;
+//             std::cout << "🔍 DEBUG: Checking existing quotes for replacement..." << std::endl;
             
             // Check each quote's age - replace if any quote is older than 500ms
             auto now_time = now();
@@ -469,7 +464,7 @@ void SignalEngine::generate_quote_signals(std::vector<TradingSignal>& signals,
                 double price_change_bps = std::abs(current_mid - last_mid_price) / last_mid_price * 10000.0;
                 if (price_change_bps > 1.0) { // Market moved more than 1 bps
                     should_replace_quotes = true;
-                    std::cout << "📈 DEBUG: MARKET MOVEMENT - Mid moved " << price_change_bps << " bps, replacing quotes" << std::endl;
+//                     std::cout << "📈 DEBUG: MARKET MOVEMENT - Mid moved " << price_change_bps << " bps, replacing quotes" << std::endl;
                 }
             }
             last_mid_price = current_mid;
@@ -477,11 +472,11 @@ void SignalEngine::generate_quote_signals(std::vector<TradingSignal>& signals,
         } else {
             // No existing quotes, should place new ones
             should_replace_quotes = true;
-            std::cout << "🔍 DEBUG: No existing quotes, placing new quotes" << std::endl;
+//             std::cout << "🔍 DEBUG: No existing quotes, placing new quotes" << std::endl;
         }
     }
     
-    std::cout << "🔍 DEBUG: should_replace_quotes = " << (should_replace_quotes ? "true" : "false") << std::endl;
+//     std::cout << "🔍 DEBUG: should_replace_quotes = " << (should_replace_quotes ? "true" : "false") << std::endl;
     
         if (should_replace_quotes) {
         // Check if we have existing quotes to cancel
@@ -497,7 +492,7 @@ void SignalEngine::generate_quote_signals(std::vector<TradingSignal>& signals,
             std::cout << "🔄 DEBUG: Cancelling existing quotes for replacement - will place new quotes in next cycle" << std::endl;
         } else {
             // No existing quotes, place initial quotes
-            std::cout << "🎯 DEBUG: Placing initial quotes..." << std::endl;
+//             std::cout << "🎯 DEBUG: Placing initial quotes..." << std::endl;
             // Generate bid signal
             if (should_place_quote(QuoteSide::BID, bid_price, bid_size)) {
                 TradingSignal signal;
@@ -509,9 +504,9 @@ void SignalEngine::generate_quote_signals(std::vector<TradingSignal>& signals,
                 signal.reason = "Market making bid";
                 signal.order_id = next_signal_id_++;  // Add unique signal ID
                 signals.push_back(signal);
-                std::cout << "✅ DEBUG: Generated BID signal ID " << signal.order_id << " - $" << bid_price << " x " << bid_size << std::endl;
+//                 std::cout << "✅ DEBUG: Generated BID signal ID " << signal.order_id << " - $" << bid_price << " x " << bid_size << std::endl;
             } else {
-                std::cout << "❌ DEBUG: BID quote rejected by should_place_quote check" << std::endl;
+//                 std::cout << "❌ DEBUG: BID quote rejected by should_place_quote check" << std::endl;
             }
             
             // Generate ask signal
@@ -525,16 +520,16 @@ void SignalEngine::generate_quote_signals(std::vector<TradingSignal>& signals,
                 signal.reason = "Market making ask";
                 signal.order_id = next_signal_id_++;  // Add unique signal ID
                 signals.push_back(signal);
-                std::cout << "✅ DEBUG: Generated ASK signal ID " << signal.order_id << " - $" << ask_price << " x " << ask_size << std::endl;
+//                 std::cout << "✅ DEBUG: Generated ASK signal ID " << signal.order_id << " - $" << ask_price << " x " << ask_size << std::endl;
             } else {
-                std::cout << "❌ DEBUG: ASK quote rejected by should_place_quote check" << std::endl;
+//                 std::cout << "❌ DEBUG: ASK quote rejected by should_place_quote check" << std::endl;
             }
         }
     } else {
-        std::cout << "📊 DEBUG: Existing quotes are competitive, no replacement needed" << std::endl;
+//         std::cout << "📊 DEBUG: Existing quotes are competitive, no replacement needed" << std::endl;
     }
     
-    std::cout << "📊 DEBUG: Quote signal generation complete - " << signals.size() << " signals" << std::endl;
+//     std::cout << "📊 DEBUG: Quote signal generation complete - " << signals.size() << " signals" << std::endl;
 }
 
 void SignalEngine::generate_cancellation_signals(std::vector<TradingSignal>& signals) {
@@ -763,7 +758,7 @@ void SignalEngine::track_order_fill(uint64_t order_id, quantity_t fill_qty, pric
         
         // If order is completely filled, remove it from active quotes
         if (it->second.filled_quantity >= it->second.quantity) {
-            std::cout << "✅ DEBUG: Order completely filled - removing from active quotes" << std::endl;
+//             std::cout << "✅ DEBUG: Order completely filled - removing from active quotes" << std::endl;
             active_quotes_.erase(it);
         }
     }
@@ -894,14 +889,14 @@ void SignalEngine::update_config(const MarketMakingConfig& config) {
 }
 
 void SignalEngine::process_market_data_update(const TopOfBook& top_of_book) {
-    std::cout << "🎯 DEBUG: process_market_data_update called" << std::endl;
+//     std::cout << "🎯 DEBUG: process_market_data_update called" << std::endl;
     
     if (!is_running_.load() || should_stop_.load() || is_destroying_.load()) {
-        std::cout << "❌ DEBUG: Signal engine not running or stopping" << std::endl;
+//         std::cout << "❌ DEBUG: Signal engine not running or stopping" << std::endl;
         return;
     }
     
-    std::cout << "✅ DEBUG: Signal engine is running, processing market data" << std::endl;
+//     std::cout << "✅ DEBUG: Signal engine is running, processing market data" << std::endl;
     
     // Update current market state
     current_top_of_book_ = top_of_book;
@@ -916,7 +911,7 @@ void SignalEngine::process_market_data_update(const TopOfBook& top_of_book) {
     if (!signals.empty()) {
         std::cout << "🎯 SIGNAL ENGINE: Generated " << signals.size() << " trading signals" << std::endl;
     } else {
-        std::cout << "📊 DEBUG: No signals generated" << std::endl;
+//         std::cout << "📊 DEBUG: No signals generated" << std::endl;
     }
     
     // Process generated signals
@@ -936,7 +931,7 @@ void SignalEngine::process_market_data_update(const TopOfBook& top_of_book) {
         
         // Check if this signal has already been processed
         if (processed_signal_ids.find(signal.order_id) != processed_signal_ids.end()) {
-            std::cout << "⚠️ DEBUG: Signal ID " << signal.order_id << " already processed, skipping" << std::endl;
+//             std::cout << "⚠️ DEBUG: Signal ID " << signal.order_id << " already processed, skipping" << std::endl;
             continue;
         }
         

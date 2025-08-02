@@ -1789,28 +1789,74 @@ void OrderBookEngine::track_queue_position(uint64_t order_id, price_t price, Sid
     pos.remaining_quantity = quantity;
     pos.entry_time = now();
     
-    // Estimate initial queue position based on current book depth
-    // In reality, this would be tracked from order book updates
-    // For now, assume we're behind existing liquidity at this price
-    auto top_of_book = get_top_of_book();
+    // FIXED: Calculate realistic queue position based on actual orderbook volumes
+    // This implements the same logic as the Python version
+    quantity_t queue_ahead = 0.0;
     
-    if (side == Side::BUY && price < top_of_book.bid_price) {
-        // Away from touch - assume some queue ahead
-        pos.queue_ahead = 0.5; // Conservative estimate
-    } else if (side == Side::SELL && price > top_of_book.ask_price) {
-        // Away from touch - assume some queue ahead  
-        pos.queue_ahead = 0.5; // Conservative estimate
-    } else if (side == Side::BUY && price == top_of_book.bid_price) {
-        // At best bid - assume we're behind existing size
-        pos.queue_ahead = top_of_book.bid_quantity * 0.8; // Behind 80% of existing liquidity
-    } else if (side == Side::SELL && price == top_of_book.ask_price) {
-        // At best ask - assume we're behind existing size
-        pos.queue_ahead = top_of_book.ask_quantity * 0.8; // Behind 80% of existing liquidity
-    } else {
-        // Inside spread (aggressive) - higher priority
-        pos.queue_ahead = 0.1; // Very small queue ahead
+    if (side == Side::BUY) {
+        // Find our price level in the bid stack
+        std::lock_guard<std::mutex> book_lock(book_mutex_);
+        auto it = bids_.find(price);
+        if (it != bids_.end()) {
+            // Found our price level - we're joining existing orders
+            // Assume we're behind 70-90% of existing volume (realistic time priority)
+            quantity_t existing_volume = it->second.total_quantity;
+            queue_ahead = existing_volume * (0.70 + (std::rand() % 21) / 100.0); // 70-90%
+            queue_ahead = std::max(0.1, queue_ahead); // Minimum 0.1
+        } else {
+            // Price level doesn't exist yet - we'll be first at this level
+            auto best_bid_it = bids_.begin();
+            if (best_bid_it != bids_.end()) {
+                price_t best_bid = best_bid_it->first;
+                if (price < best_bid) {
+                    // We're worse than best bid - small queue expected
+                    double ticks_away = (best_bid - price) / 0.01; // Assuming 0.01 tick size
+                    if (ticks_away <= 1.0) {
+                        queue_ahead = 0.1 + (std::rand() % 10) / 10.0; // 0.1-1.0
+                    } else {
+                        queue_ahead = 0.05 + (std::rand() % 5) / 10.0; // 0.05-0.5
+                    }
+                } else if (price == best_bid) {
+                    // Joining best bid - worst time priority
+                    quantity_t best_bid_vol = best_bid_it->second.total_quantity;
+                    queue_ahead = best_bid_vol * (0.85 + (std::rand() % 11) / 100.0); // 85-95%
+                    queue_ahead = std::max(1.0, queue_ahead);
+                }
+            }
+        }
+    } else { // SELL
+        // Find our price level in the ask stack
+        std::lock_guard<std::mutex> book_lock(book_mutex_);
+        auto it = asks_.find(price);
+        if (it != asks_.end()) {
+            // Found our price level - we're joining existing orders
+            quantity_t existing_volume = it->second.total_quantity;
+            queue_ahead = existing_volume * (0.70 + (std::rand() % 21) / 100.0); // 70-90%
+            queue_ahead = std::max(0.1, queue_ahead);
+        } else {
+            // Price level doesn't exist yet
+            auto best_ask_it = asks_.begin();
+            if (best_ask_it != asks_.end()) {
+                price_t best_ask = best_ask_it->first;
+                if (price > best_ask) {
+                    // We're worse than best ask
+                    double ticks_away = (price - best_ask) / 0.01;
+                    if (ticks_away <= 1.0) {
+                        queue_ahead = 0.1 + (std::rand() % 10) / 10.0;
+                    } else {
+                        queue_ahead = 0.05 + (std::rand() % 5) / 10.0;
+                    }
+                } else if (price == best_ask) {
+                    // Joining best ask - worst time priority
+                    quantity_t best_ask_vol = best_ask_it->second.total_quantity;
+                    queue_ahead = best_ask_vol * (0.85 + (std::rand() % 11) / 100.0);
+                    queue_ahead = std::max(1.0, queue_ahead);
+                }
+            }
+        }
     }
     
+    pos.queue_ahead = queue_ahead;
     queue_positions_[order_id] = pos;
     
     std::cout << "📊 QUEUE TRACK: Order " << order_id << " " << (side == Side::BUY ? "BID" : "ASK") 
@@ -1838,17 +1884,27 @@ void OrderBookEngine::track_queue_position_with_exact_position(uint64_t order_id
 void OrderBookEngine::update_queue_positions_from_trade(const TradeExecution& trade) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     
+    // FIXED: Implement deterministic queue updates like Python version
+    // Only update orders at the EXACT same price level where the trade occurred
     for (auto& [order_id, pos] : queue_positions_) {
-        // Only update orders on the same side and price as the trade
-        if ((pos.side == Side::BUY && trade.aggressor_side == Side::SELL && trade.price <= pos.price) ||
-            (pos.side == Side::SELL && trade.aggressor_side == Side::BUY && trade.price >= pos.price)) {
+        bool should_update = false;
+        
+        // Check if this order is at the exact price level where trade occurred
+        if (pos.side == Side::BUY && trade.aggressor_side == Side::SELL) {
+            // Buy orders at exactly the trade price get queue updates
+            should_update = (pos.price == trade.price);
+        } else if (pos.side == Side::SELL && trade.aggressor_side == Side::BUY) {
+            // Sell orders at exactly the trade price get queue updates  
+            should_update = (pos.price == trade.price);
+        }
+        
+        if (should_update && pos.queue_ahead > 0.0) {
+            // DETERMINISTIC: Queue advances by EXACTLY the trade quantity
+            // This matches the Python logic: order.current_queue = max(0, order.current_queue - volume_decrease)
+            quantity_t queue_reduction = std::min(pos.queue_ahead, trade.quantity);
+            pos.queue_ahead = std::max(0.0, pos.queue_ahead - queue_reduction);
             
-            // Reduce queue ahead by the trade size
-            if (pos.queue_ahead > 0.0) {
-                double queue_reduction = std::min(pos.queue_ahead, trade.quantity);
-                pos.queue_ahead -= queue_reduction;
-                
-            }
+            // Queue position updated
         }
     }
 }
@@ -1863,11 +1919,13 @@ quantity_t OrderBookEngine::calculate_fill_from_queue_position(uint64_t order_id
     
     QueuePosition& pos = it->second;
     
-    // Check if trade would cross this order
+    // FIXED: Proper price crossing logic
     bool crosses = false;
     if (pos.side == Side::BUY && trade.aggressor_side == Side::SELL) {
+        // Buy order fills when market sells at or below our bid price
         crosses = (trade.price <= pos.price);
     } else if (pos.side == Side::SELL && trade.aggressor_side == Side::BUY) {
+        // Sell order fills when market buys at or above our ask price
         crosses = (trade.price >= pos.price);
     }
     
@@ -1875,20 +1933,27 @@ quantity_t OrderBookEngine::calculate_fill_from_queue_position(uint64_t order_id
         return 0.0; // No fill - trade doesn't cross our order
     }
     
-    // Calculate fill based on queue position
-    double available_to_fill = trade.quantity - pos.queue_ahead;
+    // Fill check for order " << order_id
     
-    if (available_to_fill <= 0.0) {
-        return 0.0; // No fill - trade consumed by queue ahead
+    // FIXED: Implement proper FIFO queue logic like Python version
+    // Trade quantity must exceed queue ahead for any fill
+    if (trade.quantity <= pos.queue_ahead) {
+        // No fill: insufficient trade size
+        return 0.0; // No fill - trade consumed by queue ahead (FIFO)
     }
     
-    // Partial or full fill
-    double fill_quantity = std::min(available_to_fill, pos.remaining_quantity);
+    // Calculate available quantity after queue ahead is satisfied
+    quantity_t available_to_fill = trade.quantity - pos.queue_ahead;
     
+    // Our fill is the minimum of available quantity and our remaining quantity
+    quantity_t fill_quantity = std::min(available_to_fill, pos.remaining_quantity);
     
-    // Update position
+    // Fill calculated: " << fill_quantity
+    
+    // Update position state
     pos.remaining_quantity -= fill_quantity;
-    pos.queue_ahead = 0.0; // Now at front of queue for remaining quantity
+    // After being filled, our queue position resets (we're no longer in queue for filled amount)
+    pos.queue_ahead = std::max(0.0, pos.queue_ahead - trade.quantity);
     
     return fill_quantity;
 }
