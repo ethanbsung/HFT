@@ -1,7 +1,6 @@
 # HFT System Performance Metrics
 
-**Project**: High-Frequency Trading System  
-**Date**: December 2024  
+**Project**: High-Frequency Trading System   
 **System**: C++ Core + Python Integration  
 
 ---
