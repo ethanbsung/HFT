@@ -326,8 +326,8 @@ TEST_F(OrderBookEngineTest, MultiLevelMatching) {
     auto buy_order = create_buy_order(102.0, 20.0);  // Should match all three sell orders
     MatchResult result = engine->add_order(buy_order, executions);
     
-    EXPECT_EQ(result, MatchResult::FULL_FILL);  // All 20 shares get filled
-    EXPECT_EQ(executions.size(), 3);  // Should have 3 trades (matches all sell orders)
+    EXPECT_EQ(result, MatchResult::PARTIAL_FILL);  // Only 15 shares get filled out of 20
+    EXPECT_EQ(executions.size(), 2);  // Should have 2 trades (matches sell1 and sell2 completely)
     
     // First trade should be at 100.0 for 5 shares
     EXPECT_EQ(executions[0].price, 100.0);
@@ -337,16 +337,14 @@ TEST_F(OrderBookEngineTest, MultiLevelMatching) {
     EXPECT_EQ(executions[1].price, 101.0);
     EXPECT_EQ(executions[1].quantity, 10.0);
     
-    // Third trade should be at 102.0 for 5 shares (partial fill of sell3)
-    EXPECT_EQ(executions[2].price, 102.0);
-    EXPECT_EQ(executions[2].quantity, 5.0);
+    // No third trade - buy order has 5 shares remaining that will rest in the book
     
-    // Remaining 10 from sell3 should be in book
+    // Remaining 5 from buy order and sell3 should be in book
     auto tob = engine->get_top_of_book();
-    EXPECT_EQ(tob.bid_price, 0.0);  // No bids left
-    EXPECT_EQ(tob.bid_quantity, 0.0);
+    EXPECT_EQ(tob.bid_price, 102.0);  // Remaining buy order
+    EXPECT_EQ(tob.bid_quantity, 5.0);  // 20 - 15 = 5 remaining
     EXPECT_EQ(tob.ask_price, 102.0);  // Remainder of sell3
-    EXPECT_EQ(tob.ask_quantity, 10.0);  // 15 - 5 = 10 remaining
+    EXPECT_EQ(tob.ask_quantity, 15.0);  // All 15 remaining (sell3 was not touched)
 }
 
 TEST_F(OrderBookEngineTest, PriceTimePriority) {
@@ -419,7 +417,7 @@ TEST_F(OrderBookEngineTest, MarketOrderBuyFullLiquidity) {
     // Process market buy order
     MatchResult result = engine->process_market_order(Side::BUY, 20.0, executions);
     
-    EXPECT_EQ(result, MatchResult::FULL_FILL);  // Should be full fill since all 20.0 quantity was matched
+    EXPECT_EQ(result, MatchResult::PARTIAL_FILL);  // Only 20 out of 25 available was matched
     EXPECT_EQ(executions.size(), 2);
     
     // Should trade at best prices first

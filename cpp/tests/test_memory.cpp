@@ -710,16 +710,16 @@ TEST_F(MemoryPoolTest, ConcurrentAccess) {
         threads.emplace_back([this, operations_per_thread, &total_acquired, &total_released]() {
             std::vector<int*> local_objects;
             
-                         // Acquire objects
-             std::hash<std::thread::id> hasher;
-             for (int i = 0; i < operations_per_thread; ++i) {
-                 int* obj = pool->acquire();
-                 if (obj) {
-                     *obj = hasher(std::this_thread::get_id()) % 1000;
-                     local_objects.push_back(obj);
-                     total_acquired++;
-                 }
-             }
+            // Acquire objects
+            std::hash<std::thread::id> hasher;
+            for (int i = 0; i < operations_per_thread; ++i) {
+                int* obj = pool->acquire();
+                if (obj) {
+                    *obj = static_cast<int>(hasher(std::this_thread::get_id()) % 1000);
+                    local_objects.push_back(obj);
+                    total_acquired++;
+                }
+            }
             
             // Small delay to increase chance of conflicts
             std::this_thread::sleep_for(1ms);
