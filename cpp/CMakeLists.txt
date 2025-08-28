@@ -8,8 +8,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Compiler-specific optimizations for HFT
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    # Detect architecture for conditional optimizations
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        set(ARCH_OPTIMIZATIONS "-march=native -mtune=native")
+        message(STATUS "Detected x86_64 architecture - using native optimizations")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        set(ARCH_OPTIMIZATIONS "-march=native -mtune=native")
+        message(STATUS "Detected ARM64 architecture - using native optimizations")
+    else()
+        # Generic optimizations for unknown architectures
+        set(ARCH_OPTIMIZATIONS "-O3")
+        message(STATUS "Unknown architecture - using generic optimizations")
+    endif()
+    
     # High-performance optimizations
-    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG -march=native -mtune=native")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG ${ARCH_OPTIMIZATIONS}")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -ffast-math -funroll-loops")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -flto")  # Link-time optimization
     
@@ -30,6 +43,10 @@ endif()
 
 # Include directories
 include_directories(include)
+include_directories(/opt/homebrew/include)
+
+# Library directories
+link_directories(/opt/homebrew/lib)
 
 # Examples subdirectory removed - no longer needed
 

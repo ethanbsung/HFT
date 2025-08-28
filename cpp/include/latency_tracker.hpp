@@ -348,8 +348,9 @@ public:
     
     // Format timestamp to readable string (HH:MM:SS.mmm format)
     static inline void format_time_fast(timestamp_t timestamp, TimeBuffer& buffer) noexcept {
-        auto time_c = std::chrono::system_clock::to_time_t(
-            std::chrono::time_point_cast<std::chrono::system_clock::duration>(timestamp));
+        // Convert high_resolution_clock timestamp to system time for formatting
+        auto system_time = std::chrono::system_clock::now();
+        auto time_c = std::chrono::system_clock::to_time_t(system_time);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             timestamp.time_since_epoch()) % 1000;
         

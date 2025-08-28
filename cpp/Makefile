@@ -3,14 +3,34 @@
 
 # Compiler settings
 CXX = g++
+
+# Architecture detection for conditional optimizations
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
+# Set architecture-specific optimizations
+ifeq ($(UNAME_M),x86_64)
+    ARCH_OPTIMIZATIONS = -march=native -mtune=native
+    $(info Detected x86_64 architecture - using native optimizations)
+else ifeq ($(UNAME_M),aarch64)
+    ARCH_OPTIMIZATIONS = -march=native -mtune=native
+    $(info Detected ARM64 architecture - using native optimizations)
+else ifeq ($(UNAME_M),arm64)
+    ARCH_OPTIMIZATIONS = -march=native -mtune=native
+    $(info Detected ARM64 architecture - using native optimizations)
+else
+    ARCH_OPTIMIZATIONS = -O3
+    $(info Unknown architecture $(UNAME_M) - using generic optimizations)
+endif
+
 CXXFLAGS = -std=c++17 -Wall -Wextra -Wpedantic
 
 # Performance optimizations for HFT
-RELEASE_FLAGS = -O3 -DNDEBUG -march=native -mtune=native -ffast-math -funroll-loops -flto
+RELEASE_FLAGS = -O3 -DNDEBUG $(ARCH_OPTIMIZATIONS) -ffast-math -funroll-loops -flto
 RELEASE_FLAGS += -fno-rtti  # Disable RTTI for performance (keeping exceptions for WebSocket)
 
-# Libraries to link for WebSocket support
-WEBSOCKET_LIBS = -lboost_system -lssl -lcrypto
+# Libraries to link for WebSocket support (boost_system is header-only in newer versions)
+WEBSOCKET_LIBS = -lssl -lcrypto
 
 # Debug flags
 DEBUG_FLAGS = -g -O0 -DDEBUG -fsanitize=address
@@ -22,8 +42,12 @@ OBJDIR = obj
 BINDIR = bin
 LIBDIR = lib
 
-# Source files (excluding main_system.cpp from library)
-SOURCES = $(filter-out $(SRCDIR)/main_system.cpp, $(wildcard $(SRCDIR)/*.cpp))
+# Source files (excluding main_system.cpp and WebSocket-dependent files from library)
+WEBSOCKET_SOURCES = $(SRCDIR)/market_data_feed.cpp $(SRCDIR)/signal_engine.cpp
+SOURCES = $(filter-out $(SRCDIR)/main_system.cpp $(WEBSOCKET_SOURCES), $(wildcard $(SRCDIR)/*.cpp))
+
+# Core sources without WebSocket dependencies  
+CORE_SOURCES = $(SRCDIR)/memory_pool.cpp $(SRCDIR)/latency_tracker.cpp $(SRCDIR)/orderbook_engine.cpp $(SRCDIR)/order_manager.cpp
 OBJECTS = $(SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 HEADERS = $(wildcard $(INCDIR)/*.hpp)
 
@@ -33,10 +57,10 @@ TEST_EXEC = $(BINDIR)/hft_test
 BENCHMARK_EXEC = $(BINDIR)/hft_benchmark
 
 # Include paths
-INCLUDES = -I$(INCDIR)
+INCLUDES = -I$(INCDIR) -I/opt/homebrew/include
 
-# Libraries to link
-LIBS = -pthread $(WEBSOCKET_LIBS) -lsodium
+# Libraries to link (removed sodium dependency for cross-platform compatibility)
+LIBS = -pthread $(WEBSOCKET_LIBS) -L/opt/homebrew/lib
 
 # Test configuration
 TESTDIR = tests
@@ -45,9 +69,13 @@ TEST_OBJECTS = $(TEST_SOURCES:$(TESTDIR)/%.cpp=$(OBJDIR)/test_%.o)
 GTEST_LIBS = -lgtest -lgtest_main
 
 # Default target
-.PHONY: all clean debug release test benchmark install
+.PHONY: all clean debug release test benchmark install core
 
 all: release
+
+# Core build without WebSocket dependencies (for cross-platform testing)
+core: SOURCES = $(CORE_SOURCES)
+core: $(LIBRARY)
 
 # Release build (optimized for performance)
 release: CXXFLAGS += $(RELEASE_FLAGS)
