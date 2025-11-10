@@ -481,6 +481,16 @@ public:
      * Clear stale quotes from tracking
      */
     void clear_stale_quotes();
+    
+    /**
+     * Generate targeted quote cancellation signals for specific side
+     */
+    void generate_targeted_cancellation_signals(std::vector<TradingSignal>& signals, QuoteSide side);
+    
+    /**
+     * Generate quote cancellation signals (for testing)
+     */
+    void generate_cancellation_signals(std::vector<TradingSignal>& signals);
 
 private:
     // =========================================================================
@@ -745,11 +755,6 @@ private:
     void generate_quote_signals(std::vector<TradingSignal>& signals,
                                price_t bid_price, price_t ask_price,
                                quantity_t bid_size, quantity_t ask_size);
-    
-    /**
-     * Generate quote cancellation signals
-     */
-    void generate_cancellation_signals(std::vector<TradingSignal>& signals);
     
     /**
      * Generate quote modification signals

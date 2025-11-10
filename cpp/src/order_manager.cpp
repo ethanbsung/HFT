@@ -17,6 +17,7 @@ OrderManager::OrderManager(MemoryManager& memory_manager,
     : memory_manager_(memory_manager)
     , latency_tracker_(latency_tracker)
     , orderbook_engine_(nullptr)
+    , engine_was_connected_(false)
     , risk_limits_(risk_limits)
     , next_order_id_(1)  // Start order IDs at 1 (0 = invalid)
     , is_emergency_shutdown_(false)
@@ -226,8 +227,31 @@ bool OrderManager::modify_order(uint64_t order_id, price_t new_price, quantity_t
         return false;
     }
     
+    // **CRITICAL FIX: Modify order in OrderBookEngine first (if available)**
+    if (orderbook_engine_) {
+        price_t engine_price = (mod_type == ModificationType::PRICE_ONLY || mod_type == ModificationType::PRICE_AND_QUANTITY) 
+                               ? new_price : order_info->order.price;
+        quantity_t engine_quantity = (mod_type == ModificationType::QUANTITY_ONLY || mod_type == ModificationType::PRICE_AND_QUANTITY)
+                                     ? new_quantity : order_info->order.remaining_quantity;
+        
+        if (!orderbook_engine_->modify_order(order_id, engine_price, engine_quantity)) {
+            // Engine modify failed - could implement cancel+resubmit fallback here
+            std::cout << "❌ DEBUG: Failed to modify order in OrderBookEngine - ID: " << order_id << std::endl;
+            return false;
+        }
+    } else {
+        // For submitted/active orders, we require the engine to be present
+        if (order_info->execution_state == ExecutionState::SUBMITTED ||
+            order_info->execution_state == ExecutionState::ACKNOWLEDGED) {
+            std::cout << "❌ DEBUG: No OrderBookEngine available - cannot modify active order ID: " << order_id << std::endl;
+            return false;
+        }
+        std::cout << "⚠️ WARNING: Modifying order " << order_id << " locally only (no engine connected)" << std::endl;
+    }
+    
     timestamp_t modification_time = now();
     
+    // Update local state only after successful engine modification
     switch (mod_type) {
         case ModificationType::PRICE_ONLY:
             order_info->order.price = new_price;
@@ -263,9 +287,6 @@ bool OrderManager::modify_order(uint64_t order_id, price_t new_price, quantity_t
 }
 
 bool OrderManager::cancel_order(uint64_t order_id) {
-    // TODO: Cancel specific order
-    // LEARNING GOAL: How to cancel orders efficiently while maintaining state
-    
     MEASURE_LATENCY(latency_tracker_, LatencyType::ORDER_CANCELLATION);
     
     // Don't block cancellation during emergency shutdown - we need to cancel orders!
@@ -292,7 +313,32 @@ bool OrderManager::cancel_order(uint64_t order_id) {
     
     std::cout << "🔄 DEBUG: Attempting to cancel order ID: " << order_id << std::endl;
     
-    // Update order state
+    // **CRITICAL FIX: Cancel order in OrderBookEngine first (if available)**
+    if (orderbook_engine_) {
+        if (!orderbook_engine_->cancel_order(order_id)) {
+            std::cout << "❌ DEBUG: Failed to cancel order in OrderBookEngine - ID: " << order_id << std::endl;
+            return false;
+        }
+    } else {
+        // If engine was previously connected but now disconnected, be strict about active orders
+        if (engine_was_connected_ && 
+            (order_info->execution_state == ExecutionState::SUBMITTED ||
+             order_info->execution_state == ExecutionState::ACKNOWLEDGED)) {
+            std::cout << "❌ DEBUG: OrderBookEngine was disconnected - cannot cancel active order ID: " << order_id << std::endl;
+            return false;
+        }
+        
+        // Allow local-only cancellation for testing scenarios
+        if (order_info->execution_state == ExecutionState::SUBMITTED ||
+            order_info->execution_state == ExecutionState::ACKNOWLEDGED) {
+            std::cout << "⚠️ WARNING: Cancelling active order " << order_id 
+                      << " locally only (no engine connected) - may cause inconsistency" << std::endl;
+        } else {
+            std::cout << "⚠️ WARNING: Cancelling order " << order_id << " locally only (no engine connected)" << std::endl;
+        }
+    }
+    
+    // Update local state only after successful engine cancellation
     order_info->execution_state = ExecutionState::CANCELLED;
     order_info->order.status = OrderStatus::CANCELLED;
     order_info->order.last_update_time = now();
@@ -336,6 +382,9 @@ bool OrderManager::cancel_order(uint64_t order_id) {
 
 void OrderManager::set_orderbook_engine(OrderBookEngine* orderbook_engine) {
     orderbook_engine_ = orderbook_engine;
+    if (orderbook_engine) {
+        engine_was_connected_ = true;
+    }
     std::cout << "[ORDER MANAGER] Connected to OrderBookEngine" << std::endl;
 }
 

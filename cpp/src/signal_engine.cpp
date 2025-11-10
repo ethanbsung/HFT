@@ -486,44 +486,49 @@ void SignalEngine::generate_quote_signals(std::vector<TradingSignal>& signals,
             has_existing_quotes = !active_quotes_.empty();
         }
         
+        // **CRITICAL FIX: Targeted replacement instead of blanket cancellation**
+        // Only cancel and replace the sides we intend to place new quotes for
+        
+        bool should_place_bid = should_place_quote(QuoteSide::BID, bid_price, bid_size);
+        bool should_place_ask = should_place_quote(QuoteSide::ASK, ask_price, ask_size);
+        
         if (has_existing_quotes) {
-            // Cancel existing quotes for replacement
-            generate_cancellation_signals(signals);
-            std::cout << "🔄 DEBUG: Cancelling existing quotes for replacement - will place new quotes in next cycle" << std::endl;
-        } else {
-            // No existing quotes, place initial quotes
-//             std::cout << "🎯 DEBUG: Placing initial quotes..." << std::endl;
-            // Generate bid signal
-            if (should_place_quote(QuoteSide::BID, bid_price, bid_size)) {
-                TradingSignal signal;
-                signal.type = SignalType::PLACE_BID;
-                signal.side = Side::BUY;
-                signal.price = bid_price;
-                signal.quantity = bid_size;
-                signal.timestamp = now();
-                signal.reason = "Market making bid";
-                signal.order_id = next_signal_id_++;  // Add unique signal ID
-                signals.push_back(signal);
-//                 std::cout << "✅ DEBUG: Generated BID signal ID " << signal.order_id << " - $" << bid_price << " x " << bid_size << std::endl;
-            } else {
-//                 std::cout << "❌ DEBUG: BID quote rejected by should_place_quote check" << std::endl;
+            // Cancel only the sides we're going to replace
+            if (should_place_bid) {
+                generate_targeted_cancellation_signals(signals, QuoteSide::BID);
+                std::cout << "🔄 DEBUG: Cancelling existing BID quotes for replacement" << std::endl;
             }
-            
-            // Generate ask signal
-            if (should_place_quote(QuoteSide::ASK, ask_price, ask_size)) {
-                TradingSignal signal;
-                signal.type = SignalType::PLACE_ASK;
-                signal.side = Side::SELL;
-                signal.price = ask_price;
-                signal.quantity = ask_size;
-                signal.timestamp = now();
-                signal.reason = "Market making ask";
-                signal.order_id = next_signal_id_++;  // Add unique signal ID
-                signals.push_back(signal);
-//                 std::cout << "✅ DEBUG: Generated ASK signal ID " << signal.order_id << " - $" << ask_price << " x " << ask_size << std::endl;
-            } else {
-//                 std::cout << "❌ DEBUG: ASK quote rejected by should_place_quote check" << std::endl;
+            if (should_place_ask) {
+                generate_targeted_cancellation_signals(signals, QuoteSide::ASK);
+                std::cout << "🔄 DEBUG: Cancelling existing ASK quotes for replacement" << std::endl;
             }
+        }
+        
+        // Generate new quote signals (regardless of whether we have existing quotes)
+        if (should_place_bid) {
+            TradingSignal signal;
+            signal.type = SignalType::PLACE_BID;
+            signal.side = Side::BUY;
+            signal.price = bid_price;
+            signal.quantity = bid_size;
+            signal.timestamp = now();
+            signal.reason = "Market making bid";
+            signal.order_id = next_signal_id_++;  // Add unique signal ID
+            signals.push_back(signal);
+            std::cout << "✅ DEBUG: Generated BID signal ID " << signal.order_id << " - $" << bid_price << " x " << bid_size << std::endl;
+        }
+        
+        if (should_place_ask) {
+            TradingSignal signal;
+            signal.type = SignalType::PLACE_ASK;
+            signal.side = Side::SELL;
+            signal.price = ask_price;
+            signal.quantity = ask_size;
+            signal.timestamp = now();
+            signal.reason = "Market making ask";
+            signal.order_id = next_signal_id_++;  // Add unique signal ID
+            signals.push_back(signal);
+            std::cout << "✅ DEBUG: Generated ASK signal ID " << signal.order_id << " - $" << ask_price << " x " << ask_size << std::endl;
         }
     } else {
 //         std::cout << "📊 DEBUG: Existing quotes are competitive, no replacement needed" << std::endl;
@@ -561,6 +566,36 @@ void SignalEngine::generate_cancellation_signals(std::vector<TradingSignal>& sig
         
         // Don't clear active_quotes_ here - let the order manager handle the cancellations
         // active_quotes_ will be updated when order callbacks are received
+    }
+}
+
+void SignalEngine::generate_targeted_cancellation_signals(std::vector<TradingSignal>& signals, QuoteSide side) {
+    if (!orderbook_engine_) {
+        return;
+    }
+    
+    auto top_of_book = orderbook_engine_->get_top_of_book();
+    price_t mid_price = top_of_book.mid_price;
+    
+    if (mid_price <= 0.0) {
+        return;
+    }
+    
+    // Only cancel quotes on the specified side
+    {
+        std::lock_guard<std::mutex> lock(quotes_mutex_);
+        for (const auto& [order_id, quote] : active_quotes_) {
+            if (quote.side == side) {
+                TradingSignal signal;
+                signal.type = (quote.side == QuoteSide::BID) ? SignalType::CANCEL_BID : SignalType::CANCEL_ASK;
+                signal.order_id = order_id;
+                signal.timestamp = now();
+                signal.reason = "Replacing " + std::string(side == QuoteSide::BID ? "bid" : "ask") + " quote with new market making quote";
+                signals.push_back(signal);
+                std::cout << "🔄 DEBUG: Cancelling " << (side == QuoteSide::BID ? "BID" : "ASK") 
+                          << " quote - Order ID: " << order_id << " Price: $" << quote.price << std::endl;
+            }
+        }
     }
 }
 

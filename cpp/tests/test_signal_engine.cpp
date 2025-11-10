@@ -1045,6 +1045,111 @@ TEST_F(SignalEngineTest, BoundaryValuesForRateLimits) {
     EXPECT_GT(signals.size(), 0);
 }
 
+// =============================================================================
+// TARGETED CANCELLATION TESTS
+// =============================================================================
+
+TEST_F(SignalEngineTest, TargetedCancellationBidOnly) {
+    // Test that targeted cancellation only cancels the specified side
+    signal_engine_->start();
+    setup_market_data(100.0, 101.0);
+    
+    // Create mock active quotes on both sides
+    std::vector<TradingSignal> signals;
+    
+    // Simulate existing quotes being tracked
+    signal_engine_->track_order_placement(1, QuoteSide::BID, 99.5, 10.0);
+    signal_engine_->track_order_placement(2, QuoteSide::ASK, 100.5, 10.0);
+    
+    // Generate targeted cancellation for BID only
+    signal_engine_->generate_targeted_cancellation_signals(signals, QuoteSide::BID);
+    
+    // Should only generate one CANCEL_BID signal
+    EXPECT_EQ(signals.size(), 1);
+    EXPECT_EQ(signals[0].type, SignalType::CANCEL_BID);
+    EXPECT_EQ(signals[0].order_id, 1);
+}
+
+TEST_F(SignalEngineTest, TargetedCancellationAskOnly) {
+    // Test that targeted cancellation only cancels ASK side
+    signal_engine_->start();
+    setup_market_data(100.0, 101.0);
+    
+    std::vector<TradingSignal> signals;
+    
+    // Simulate existing quotes being tracked
+    signal_engine_->track_order_placement(1, QuoteSide::BID, 99.5, 10.0);
+    signal_engine_->track_order_placement(2, QuoteSide::ASK, 100.5, 10.0);
+    
+    // Generate targeted cancellation for ASK only
+    signal_engine_->generate_targeted_cancellation_signals(signals, QuoteSide::ASK);
+    
+    // Should only generate one CANCEL_ASK signal
+    EXPECT_EQ(signals.size(), 1);
+    EXPECT_EQ(signals[0].type, SignalType::CANCEL_ASK);
+    EXPECT_EQ(signals[0].order_id, 2);
+}
+
+TEST_F(SignalEngineTest, TargetedCancellationMultipleSameSide) {
+    // Test targeted cancellation with multiple orders on same side
+    signal_engine_->start();
+    setup_market_data(100.0, 101.0);
+    
+    std::vector<TradingSignal> signals;
+    
+    // Simulate multiple BID quotes being tracked
+    signal_engine_->track_order_placement(1, QuoteSide::BID, 99.5, 10.0);
+    signal_engine_->track_order_placement(3, QuoteSide::BID, 99.0, 5.0);
+    signal_engine_->track_order_placement(2, QuoteSide::ASK, 100.5, 10.0);
+    
+    // Generate targeted cancellation for BID only
+    signal_engine_->generate_targeted_cancellation_signals(signals, QuoteSide::BID);
+    
+    // Should generate two CANCEL_BID signals
+    EXPECT_EQ(signals.size(), 2);
+    for (const auto& signal : signals) {
+        EXPECT_EQ(signal.type, SignalType::CANCEL_BID);
+        EXPECT_TRUE(signal.order_id == 1 || signal.order_id == 3);
+    }
+}
+
+TEST_F(SignalEngineTest, TargetedCancellationEmptyQuotes) {
+    // Test targeted cancellation with no active quotes
+    signal_engine_->start();
+    setup_market_data(100.0, 101.0);
+    
+    std::vector<TradingSignal> signals;
+    
+    // Generate targeted cancellation with no active quotes
+    signal_engine_->generate_targeted_cancellation_signals(signals, QuoteSide::BID);
+    
+    // Should generate no signals
+    EXPECT_EQ(signals.size(), 0);
+}
+
+TEST_F(SignalEngineTest, BlankVsTargetedCancellation) {
+    // Compare blanket vs targeted cancellation behavior
+    signal_engine_->start();
+    setup_market_data(100.0, 101.0);
+    
+    // Setup quotes on both sides
+    signal_engine_->track_order_placement(1, QuoteSide::BID, 99.5, 10.0);
+    signal_engine_->track_order_placement(2, QuoteSide::ASK, 100.5, 10.0);
+    
+    // Test blanket cancellation
+    std::vector<TradingSignal> blanket_signals;
+    signal_engine_->generate_cancellation_signals(blanket_signals);
+    
+    // Test targeted cancellation for BID only
+    std::vector<TradingSignal> targeted_signals;
+    signal_engine_->generate_targeted_cancellation_signals(targeted_signals, QuoteSide::BID);
+    
+    // Blanket should cancel both sides, targeted should cancel one
+    EXPECT_EQ(blanket_signals.size(), 2);
+    EXPECT_EQ(targeted_signals.size(), 1);
+    EXPECT_EQ(targeted_signals[0].type, SignalType::CANCEL_BID);
+}
+
 } // namespace test
 } // namespace hft
 

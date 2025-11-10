@@ -381,6 +381,7 @@ private:
     MemoryManager& memory_manager_;
     LatencyTracker& latency_tracker_;
     OrderBookEngine* orderbook_engine_;  // Integration point for order execution
+    bool engine_was_connected_;          // Track if engine was ever connected
 
     // Order storage and lookup (hot path data)
     std::unordered_map<uint64_t, OrderInfo> orders_;           // All orders
