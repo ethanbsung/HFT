@@ -357,6 +357,9 @@ private:
     // Market impact calculation
     double calculate_market_impact(quantity_t quantity, price_t price) const;
     
+    // Force cancel order during shutdown (bypasses engine to avoid deadlocks)
+    bool force_cancel_order_during_shutdown(uint64_t order_id);
+    
     // Position update helpers
     void update_position_internal(quantity_t quantity, price_t price, Side side);
     void calculate_realized_pnl(quantity_t closed_qty, price_t close_price);

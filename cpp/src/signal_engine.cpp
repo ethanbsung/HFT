@@ -457,17 +457,46 @@ void SignalEngine::generate_quote_signals(std::vector<TradingSignal>& signals,
                 }
             }
             
-            // Also check for significant price improvement
-            static price_t last_mid_price = 0.0;
-            price_t current_mid = (bid_price + ask_price) / 2.0;
-            if (last_mid_price > 0.0) {
-                double price_change_bps = std::abs(current_mid - last_mid_price) / last_mid_price * 10000.0;
-                if (price_change_bps > 1.0) { // Market moved more than 1 bps
+            // Also check for significant price improvement - USE MARKET MID PRICE, NOT OUR QUOTES!
+            static price_t last_market_mid_price = 0.0;
+            // Get actual market mid price from orderbook engine, not our calculated quotes
+            auto top_of_book = orderbook_engine_->get_top_of_book();
+            price_t current_market_mid = top_of_book.mid_price;
+            
+            if (last_market_mid_price > 0.0 && current_market_mid > 0.0) {
+                double price_change_bps = std::abs(current_market_mid - last_market_mid_price) / last_market_mid_price * 10000.0;
+                if (price_change_bps > 0.5) { // Market moved more than 0.5 bps (more aggressive)
                     should_replace_quotes = true;
-//                     std::cout << "📈 DEBUG: MARKET MOVEMENT - Mid moved " << price_change_bps << " bps, replacing quotes" << std::endl;
+                    std::cout << "📈 DEBUG: MARKET MOVEMENT - Market mid moved " << price_change_bps << " bps, replacing quotes" << std::endl;
                 }
             }
-            last_mid_price = current_mid;
+            if (current_market_mid > 0.0) {
+                last_market_mid_price = current_market_mid;
+            }
+            
+            // Check if our quotes are no longer competitive (not at best bid/offer)
+            if (top_of_book.bid_price > 0.0 && top_of_book.ask_price > 0.0) {
+                for (const auto& [order_id, quote] : active_quotes_) {
+                    bool is_competitive = false;
+                    if (quote.side == QuoteSide::BID) {
+                        // Our bid should be at or very close to the best bid
+                        is_competitive = (quote.price >= top_of_book.bid_price - 0.01);
+                    } else {
+                        // Our ask should be at or very close to the best ask  
+                        is_competitive = (quote.price <= top_of_book.ask_price + 0.01);
+                    }
+                    
+                    if (!is_competitive) {
+                        should_replace_quotes = true;
+                        std::cout << "💰 DEBUG: UNCOMPETITIVE QUOTE - " << (quote.side == QuoteSide::BID ? "BID" : "ASK") 
+                                  << " $" << quote.price << " not competitive with market " 
+                                  << (quote.side == QuoteSide::BID ? "bid $" : "ask $") 
+                                  << (quote.side == QuoteSide::BID ? top_of_book.bid_price : top_of_book.ask_price) 
+                                  << ", replacing quotes" << std::endl;
+                        break;
+                    }
+                }
+            }
             
         } else {
             // No existing quotes, should place new ones

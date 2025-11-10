@@ -47,8 +47,8 @@ WEBSOCKET_SOURCES = $(SRCDIR)/market_data_feed.cpp $(SRCDIR)/signal_engine.cpp
 SOURCES = $(filter-out $(SRCDIR)/main_system.cpp $(WEBSOCKET_SOURCES), $(wildcard $(SRCDIR)/*.cpp))
 
 # Core sources without WebSocket dependencies  
-CORE_SOURCES = $(SRCDIR)/memory_pool.cpp $(SRCDIR)/latency_tracker.cpp $(SRCDIR)/orderbook_engine.cpp $(SRCDIR)/order_manager.cpp
-OBJECTS = $(SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
+CORE_SOURCES = $(SRCDIR)/memory_pool.cpp $(SRCDIR)/latency_tracker.cpp $(SRCDIR)/orderbook_engine.cpp $(SRCDIR)/order_manager.cpp $(SRCDIR)/signal_engine.cpp $(SRCDIR)/market_data_feed.cpp
+OBJECTS = $(CORE_SOURCES:$(SRCDIR)/%.cpp=$(OBJDIR)/%.o)
 HEADERS = $(wildcard $(INCDIR)/*.hpp)
 
 # Library and executable names

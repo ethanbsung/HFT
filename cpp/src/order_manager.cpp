@@ -49,11 +49,12 @@ OrderManager::~OrderManager() {
         orders_to_cancel.push_back(order_id);
     }
     
-    // Cancel them properly
+    // Cancel them properly during shutdown
     if (!orders_to_cancel.empty()) {
         std::cout << "🔄 Cancelling " << orders_to_cancel.size() << " remaining orders..." << std::endl;
         for (uint64_t order_id : orders_to_cancel) {
-            cancel_order(order_id);
+            // Force cancel during shutdown - bypass engine callbacks to avoid deadlocks
+            force_cancel_order_during_shutdown(order_id);
         }
         std::cout << "✅ All remaining orders cancelled successfully" << std::endl;
     }
@@ -1195,6 +1196,63 @@ void OrderManager::print_debug_info() const {
     std::cout << "Pending orders: " << pending_orders_.size() << std::endl;
     std::cout << "Emergency shutdown: " << is_emergency_shutdown_.load() << std::endl;
     std::cout << "=================================" << std::endl;
+}
+
+bool OrderManager::force_cancel_order_during_shutdown(uint64_t order_id) {
+    // Force cancel order during shutdown - bypasses engine to avoid circular calls and deadlocks
+    
+    OrderInfo* order_info = find_order(order_id);
+    if (!order_info) {
+        std::cout << "⚠️ DEBUG: Order not found for force cancellation - ID: " << order_id << std::endl;
+        return false;
+    }
+    
+    // Skip if already cancelled
+    if (order_info->execution_state == ExecutionState::CANCELLED) {
+        std::cout << "⚠️ DEBUG: Order already cancelled - ID: " << order_id << std::endl;
+        return true;
+    }
+    
+    std::cout << "🔄 DEBUG: Force cancelling order ID: " << order_id << " during shutdown" << std::endl;
+    
+    // During shutdown, skip engine cancellation to avoid circular calls and deadlocks
+    // The engine will be destroyed anyway, so we only need to clean up local state
+    std::cout << "⚠️ DEBUG: Bypassing engine cancel during shutdown for order " << order_id 
+              << " - performing local cleanup only" << std::endl;
+    
+    // Force update local state regardless of engine result
+    order_info->execution_state = ExecutionState::CANCELLED;
+    order_info->order.status = OrderStatus::CANCELLED;
+    order_info->order.last_update_time = now();
+    order_info->completion_time = order_info->order.last_update_time;
+    
+    // Release order back to memory pool
+    auto pooled_it = pooled_orders_.find(order_id);
+    if (pooled_it != pooled_orders_.end()) {
+        memory_manager_.order_pool().release_order(pooled_it->second);
+        pooled_orders_.erase(pooled_it);
+        std::cout << "♻️ DEBUG: Released order back to memory pool - ID: " << order_id << std::endl;
+    }
+    
+    // Update statistics
+    {
+        std::lock_guard<std::mutex> lock(stats_mutex_);
+        execution_stats_.cancelled_orders++;
+        
+        if (execution_stats_.total_orders > 0) {
+            execution_stats_.fill_rate = static_cast<double>(execution_stats_.filled_orders) / 
+                                        execution_stats_.total_orders;
+        }
+    }
+    
+    // Remove from tracking (force cleanup)
+    pending_orders_.erase(order_id);
+    active_orders_.erase(order_id);
+    
+    std::cout << "✅ FORCE CANCELLED: " << (order_info->order.side == Side::BUY ? "BID" : "ASK") 
+              << " Order ID: " << order_id << " during shutdown" << std::endl;
+    
+    return true;
 }
 
 } // namespace hft
