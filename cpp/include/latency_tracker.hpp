@@ -364,7 +364,7 @@ public:
     // Format duration in microseconds to readable string
     static inline void format_duration_fast(double duration_us, TimeBuffer& buffer) noexcept {
         if (duration_us < 1000.0) {
-            std::snprintf(buffer.data(), BUFFER_SIZE, "%.1fμs", duration_us);
+            std::snprintf(buffer.data(), BUFFER_SIZE, "%.1fs", duration_us);
         } else if (duration_us < 1000000.0) {
             std::snprintf(buffer.data(), BUFFER_SIZE, "%.2fms", duration_us / 1000.0);
         } else {

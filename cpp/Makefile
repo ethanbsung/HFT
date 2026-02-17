@@ -112,6 +112,9 @@ $(OBJDIR)/test_%.o: $(TESTDIR)/test_%.cpp $(HEADERS) | $(OBJDIR)
 MAIN_EXEC = $(BINDIR)/hft_system
 MAIN_OBJECT = $(OBJDIR)/main_system.o
 
+# Always build the live system binary with release optimizations.
+$(MAIN_EXEC): CXXFLAGS += $(RELEASE_FLAGS)
+
 # Test executables
 test: test_data_feed test_orderbook test_latency test_signal_engine test_order_manager
 

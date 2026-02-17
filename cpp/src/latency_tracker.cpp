@@ -296,11 +296,11 @@ PerformanceTrendData LatencyTracker::calculate_performance_trend(LatencyType typ
 
 std::string LatencyTracker::trend_to_string(PerformanceTrend trend) const {
     switch (trend) {
-        case PerformanceTrend::IMPROVING: return "📈 Improving";
-        case PerformanceTrend::STABLE: return "📊 Stable";
-        case PerformanceTrend::DEGRADING: return "📉 Degrading";
-        case PerformanceTrend::VOLATILE: return "⚡ Volatile";
-        default: return "❓ Unknown";
+        case PerformanceTrend::IMPROVING: return " Improving";
+        case PerformanceTrend::STABLE: return " Stable";
+        case PerformanceTrend::DEGRADING: return " Degrading";
+        case PerformanceTrend::VOLATILE: return " Volatile";
+        default: return " Unknown";
     }
 }
 
@@ -398,9 +398,9 @@ std::string LatencyTracker::latency_type_to_string(LatencyType type) const {
 
 std::string LatencyTracker::severity_to_string(SpikesSeverity severity) const {
     switch(severity) {
-        case SpikesSeverity::WARNING: return "⚠️ Warning";
-        case SpikesSeverity::CRITICAL: return "🚨 Critical";
-        default: return "❓ Unknown";
+        case SpikesSeverity::WARNING: return " Warning";
+        case SpikesSeverity::CRITICAL: return " Critical";
+        default: return " Unknown";
     }
 }
 
@@ -410,13 +410,13 @@ std::string LatencyTracker::severity_to_string(SpikesSeverity severity) const {
 
 std::string LatencyTracker::assess_performance(const LatencyStatistics& stats, LatencyType type) const {
     if (stats.p95_us < get_threshold(type, SpikesSeverity::WARNING) * 0.5) {
-        return "🟢 Excellent";
+        return " Excellent";
     } else if (stats.p95_us < get_threshold(type, SpikesSeverity::WARNING)) {
-        return "🟡 Good";
+        return " Good";
     } else if (stats.p95_us < get_threshold(type, SpikesSeverity::CRITICAL)) {
-        return "🟠 Acceptable";
+        return " Acceptable";
     } else {
-        return "🔴 Poor";
+        return " Poor";
     }
 }
 
@@ -429,7 +429,7 @@ bool LatencyTracker::is_performance_acceptable(const LatencyStatistics& stats, L
 // =============================================================================
 
 void LatencyTracker::print_latency_report() const {
-    std::cout << "\n🚀 === LATENCY SUMMARY REPORT === 🚀" << std::endl;
+    std::cout << "\n === LATENCY SUMMARY REPORT === " << std::endl;
     
     // Set up formatting for nice aligned output
     std::cout << std::fixed << std::setprecision(2);
@@ -479,30 +479,30 @@ void LatencyTracker::print_latency_report() const {
     TimeFormatter::TimeBuffer uptime_buffer;
     TimeFormatter::format_duration_fast(get_uptime_seconds() * 1000000, uptime_buffer);
     
-    std::cout << "📊 Session uptime: " << uptime_buffer.data() << std::endl;
-    std::cout << "📈 Total measurements: " << get_total_measurements() << std::endl;
-    std::cout << "⚠️  Recent spikes: " << spike_history_.size() << std::endl;
+    std::cout << " Session uptime: " << uptime_buffer.data() << std::endl;
+    std::cout << " Total measurements: " << get_total_measurements() << std::endl;
+    std::cout << "  Recent spikes: " << spike_history_.size() << std::endl;
     
     if (should_alert()) {
-        std::cout << "🚨 ALERT: Performance degradation detected!" << std::endl;
+        std::cout << " ALERT: Performance degradation detected!" << std::endl;
     } else {
-        std::cout << "✅ System operating within normal parameters" << std::endl;
+        std::cout << " System operating within normal parameters" << std::endl;
     }
     std::cout << std::endl;
 }
 
 void LatencyTracker::print_detailed_report() const {
-    std::cout << "\n🔍 === DETAILED LATENCY REPORT === 🔍" << std::endl;
+    std::cout << "\n === DETAILED LATENCY REPORT === " << std::endl;
     
     print_latency_report();
     
-    std::cout << "\n⚡ === SPIKE ANALYSIS === ⚡" << std::endl;
+    std::cout << "\n === SPIKE ANALYSIS === " << std::endl;
     
     // Get recent spikes for analysis
     auto recent_spikes = get_recent_spikes(5); // Last 5 minutes
     
     if (recent_spikes.empty()) {
-        std::cout << "✅ No latency spikes detected in the last 5 minutes." << std::endl;
+        std::cout << " No latency spikes detected in the last 5 minutes." << std::endl;
     } else {
         // Group spikes by severity
         size_t warning_count = 0;
@@ -516,13 +516,13 @@ void LatencyTracker::print_detailed_report() const {
             }
         }
         
-        std::cout << "📊 Recent spikes (last 5 minutes):" << std::endl;
-        std::cout << "  ⚠️  Warnings: " << warning_count << std::endl;
-        std::cout << "  🚨 Critical: " << critical_count << std::endl;
-        std::cout << "  📊 Total: " << recent_spikes.size() << std::endl;
+        std::cout << " Recent spikes (last 5 minutes):" << std::endl;
+        std::cout << "    Warnings: " << warning_count << std::endl;
+        std::cout << "   Critical: " << critical_count << std::endl;
+        std::cout << "   Total: " << recent_spikes.size() << std::endl;
         
         // Print spike details table with readable timestamps
-        std::cout << "\n🕒 Spike Details:" << std::endl;
+        std::cout << "\n Spike Details:" << std::endl;
         std::cout << std::setw(25) << "Type"
                   << std::setw(15) << "Severity"
                   << std::setw(15) << "Latency"
@@ -543,7 +543,7 @@ void LatencyTracker::print_detailed_report() const {
     }
     
     // Performance trend summary
-    std::cout << "\n📈 === PERFORMANCE TRENDS === 📈" << std::endl;
+    std::cout << "\n === PERFORMANCE TRENDS === " << std::endl;
     for (size_t i = 0; i < static_cast<size_t>(LatencyType::COUNT); ++i) {
         LatencyType type = static_cast<LatencyType>(i);
         auto stats = get_statistics(type);
@@ -557,13 +557,13 @@ void LatencyTracker::print_detailed_report() const {
     }
     
     // Alert status with recommendations
-    std::cout << "\n🎯 Alert Status: " << (should_alert() ? "🚨 ALERT" : "✅ Normal") << std::endl;
+    std::cout << "\n Alert Status: " << (should_alert() ? " ALERT" : " Normal") << std::endl;
     
     if (should_alert()) {
-        std::cout << "\n💡 Recommendations:" << std::endl;
-        std::cout << "  • Review system load and CPU utilization" << std::endl;
-        std::cout << "  • Check network connectivity and latency" << std::endl;
-        std::cout << "  • Consider scaling resources or optimizing algorithms" << std::endl;
+        std::cout << "\n Recommendations:" << std::endl;
+        std::cout << "   Review system load and CPU utilization" << std::endl;
+        std::cout << "   Check network connectivity and latency" << std::endl;
+        std::cout << "   Consider scaling resources or optimizing algorithms" << std::endl;
     }
 }
 

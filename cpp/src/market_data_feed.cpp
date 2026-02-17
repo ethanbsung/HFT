@@ -1,4 +1,5 @@
 #include "market_data_feed.hpp"
+#include "log_control.hpp"
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -426,15 +427,15 @@ void MarketDataFeed::print_performance_report() const {
     auto stats = get_statistics();
     
     std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "📡 HFT MARKET DATA FEED PERFORMANCE REPORT" << std::endl;
+    std::cout << " HFT MARKET DATA FEED PERFORMANCE REPORT" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
     
-    std::cout << "\n📊 MESSAGE STATISTICS:" << std::endl;
+    std::cout << "\n MESSAGE STATISTICS:" << std::endl;
     std::cout << "  Messages Processed:   " << std::setw(10) << stats.messages_processed << std::endl;
     std::cout << "  Trades Processed:     " << std::setw(10) << stats.trades_processed << std::endl;
     std::cout << "  Book Updates:         " << std::setw(10) << stats.book_updates_processed << std::endl;
     
-    std::cout << "\n🔌 CONNECTION STATISTICS:" << std::endl;
+    std::cout << "\n CONNECTION STATISTICS:" << std::endl;
     std::cout << "  Connection State:     " << std::setw(10) << static_cast<int>(get_connection_state()) << std::endl;
     
     std::cout << "\n" << std::string(60, '=') << std::endl;
@@ -559,10 +560,8 @@ void MarketDataFeed::websocket_thread_main() {
         try {
             auto* client = static_cast<WebSocketClient*>(websocket_handle_);
             
-            // Run with periodic shutdown checks
-            auto start_time = std::chrono::steady_clock::now();
-            while (!should_stop_.load() && 
-                   std::chrono::steady_clock::now() - start_time < std::chrono::seconds(30)) {
+            // Run continuously until shutdown.
+            while (!should_stop_.load()) {
                 client->run_one();  // Run one iteration instead of blocking run()
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
@@ -629,6 +628,8 @@ void MarketDataFeed::process_message(const std::string& raw_message) {
 }
 
 void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_message, timestamp_t arrival_time) {
+    ScopedCoutSilencer silence_hot_path(!kEnableHotPathLogging);
+
     // Calculate real market data processing latency from arrival to processing start
     auto processing_start = now_monotonic_raw();
     auto network_to_processing_latency = time_diff_us(arrival_time, processing_start);
@@ -702,7 +703,7 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
                 break;
             default:
                 // Unknown message type - log and ignore
-//                 std::cout << "⚠️ DEBUG: Unknown message type - content: " << raw_message.substr(0, 200) << "..." << std::endl;
+//                 std::cout << " DEBUG: Unknown message type - content: " << raw_message.substr(0, 200) << "..." << std::endl;
                 break;
         }
         
@@ -721,7 +722,7 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
 void MarketDataFeed::process_message_fast(const std::string& raw_message) {
     MEASURE_MARKET_DATA_LATENCY_FAST(latency_tracker_);
     
-    std::cout << "⚡ DEBUG: process_message_fast called with message length: " << raw_message.length() << std::endl;
+    std::cout << " DEBUG: process_message_fast called with message length: " << raw_message.length() << std::endl;
     
     try {
         auto json = nlohmann::json::parse(raw_message);
@@ -731,10 +732,10 @@ void MarketDataFeed::process_message_fast(const std::string& raw_message) {
             auto& first_event = json["events"][0];
             
             if (first_event.contains("trades")) {
-                std::cout << "⚡ DEBUG: Processing trade in fast path" << std::endl;
+                std::cout << " DEBUG: Processing trade in fast path" << std::endl;
                 process_trade_fast(first_event);
             } else if (first_event.contains("updates")) {
-                std::cout << "⚡ DEBUG: Processing book update in fast path" << std::endl;
+                std::cout << " DEBUG: Processing book update in fast path" << std::endl;
                 process_book_update_fast(first_event);
             }
         }
@@ -748,7 +749,7 @@ void MarketDataFeed::process_message_fast(const std::string& raw_message) {
         
     } catch (const std::exception& ex) {
         // Minimal error handling for speed
-        std::cout << "⚡ DEBUG: Error in fast path: " << ex.what() << std::endl;
+        std::cout << " DEBUG: Error in fast path: " << ex.what() << std::endl;
     }
 }
 
@@ -812,17 +813,11 @@ void MarketDataFeed::update_order_book_from_trade_fast(double price, double size
 }
 
 void MarketDataFeed::update_order_book_from_l2update_fast(Side side, double price, double size) {
-    // FIXED: Use real market data processing instead of synthetic orders
-    // This processes actual Coinbase L2 order book updates
-    
-    // L2 Update processing
-    
-    // Note: Level updates are handled through the regular order book interface
-    // MarketDataFeed should focus on data processing, not direct book manipulation
-    
-    // Trigger market data update callback to signal engine
-    auto top_of_book = order_book_.get_top_of_book();
-    // Top of book updated
+    // TODO: wire incremental level updates directly into OrderBookEngine.
+    // The signal path is still triggered via the outer book callback.
+    (void)side;
+    (void)price;
+    (void)size;
 }
 
 void MarketDataFeed::handle_trade_message_with_arrival_time(const std::string& message, timestamp_t arrival_time) {
@@ -843,7 +838,7 @@ void MarketDataFeed::handle_trade_message_with_arrival_time(const std::string& m
         latency_tracker_.add_latency_fast_path(LatencyType::MARKET_DATA_PROCESSING, to_microseconds(total_processing_latency));
     }
     
-    // Trade latency: " << to_microseconds(total_processing_latency) << "μs"
+    // Trade latency: " << to_microseconds(total_processing_latency) << "us"
     
     update_order_book_from_trade(trade);
     
@@ -888,11 +883,11 @@ void MarketDataFeed::handle_book_message_with_arrival_time(const std::string& me
         latency_tracker_.add_latency_fast_path(LatencyType::MARKET_DATA_PROCESSING, to_microseconds(total_processing_latency));
     }
     
-    // Book latency: " << to_microseconds(total_processing_latency) << "μs"
+    // Book latency: " << to_microseconds(total_processing_latency) << "us"
     
     if (book.type == "snapshot") {
         update_order_book_from_snapshot(book);
-    } else if (book.type == "l2update") {
+    } else if (book.type == "l2update" || book.type == "update") {
         update_order_book_from_l2update(book);
     }
     
@@ -910,7 +905,7 @@ void MarketDataFeed::handle_book_message(const std::string& message) {
     
     if (book.type == "snapshot") {
         update_order_book_from_snapshot(book);
-    } else if (book.type == "l2update") {
+    } else if (book.type == "l2update" || book.type == "update") {
         update_order_book_from_l2update(book);
     }
     
@@ -1019,7 +1014,7 @@ CoinbaseTradeMessage MarketDataFeed::parse_trade_message(const std::string& mess
                 trade.parsed_time = now();
                 
                 // DEBUG: Log actual trade data
-                std::cout << "🔍 TRADE PARSE: size='" << trade.size << "' -> parsed_size=" 
+                std::cout << " TRADE PARSE: size='" << trade.size << "' -> parsed_size=" 
                           << trade.parsed_size << " price='" << trade.price << "' -> parsed_price=" 
                           << trade.parsed_price << std::endl;
                 
@@ -1044,7 +1039,7 @@ CoinbaseTradeMessage MarketDataFeed::parse_trade_message(const std::string& mess
         trade.parsed_time = now();
         
         // DEBUG: Log actual trade data (fallback path)
-        std::cout << "🔍 TRADE PARSE (fallback): size='" << trade.size << "' -> parsed_size=" 
+        std::cout << " TRADE PARSE (fallback): size='" << trade.size << "' -> parsed_size=" 
                   << trade.parsed_size << " price='" << trade.price << "' -> parsed_price=" 
                   << trade.parsed_price << std::endl;
     } catch (const nlohmann::json::parse_error& ex) {

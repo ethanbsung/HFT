@@ -10,7 +10,8 @@
 namespace hft {
 
 // Timing and latency types
-using timestamp_t = std::chrono::time_point<std::chrono::high_resolution_clock>;
+using hft_clock_t = std::chrono::steady_clock;
+using timestamp_t = std::chrono::time_point<hft_clock_t>;
 using duration_us_t = std::chrono::microseconds;
 
 // Price and quantity types - use fixed point for precision
@@ -71,12 +72,12 @@ struct PriceLevel {
     void add_order(uint64_t order_id, quantity_t qty) {
         order_queue.push(order_id);
         total_quantity += qty;
-        last_update = std::chrono::high_resolution_clock::now();
+        last_update = hft_clock_t::now();
     }
 
     void remove_order(quantity_t qty) {
         total_quantity -= qty;
-        last_update = std::chrono::high_resolution_clock::now();
+        last_update = hft_clock_t::now();
     }
 };
 
@@ -221,12 +222,12 @@ struct PerformanceStats {
 
 // Utility functions
 inline timestamp_t now() {
-    return std::chrono::high_resolution_clock::now();
+    return hft_clock_t::now();
 }
 
 // High-resolution timestamp for HFT measurements
 inline timestamp_t now_monotonic_raw() {
-    return std::chrono::high_resolution_clock::now();
+    return hft_clock_t::now();
 }
 
 // MarketDepth constructor implementation (after now() is defined)

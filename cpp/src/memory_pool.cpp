@@ -71,12 +71,12 @@ void OrderPool::reset_stats() {
 // =============================================================================
 
 void OrderPool::shrink_to_fit(size_t target_objects) {
-    std::cout << "[ORDER POOL] 🔧 Shrinking to " << target_objects << " objects" << std::endl;
+    std::cout << "[ORDER POOL]  Shrinking to " << target_objects << " objects" << std::endl;
     pool_.shrink_to_fit(target_objects);
 }
 
 void OrderPool::reserve(size_t additional_objects) {
-    std::cout << "[ORDER POOL] 🔧 Reserving " << additional_objects << " additional objects" << std::endl;
+    std::cout << "[ORDER POOL]  Reserving " << additional_objects << " additional objects" << std::endl;
     pool_.reserve(additional_objects);
 }
 
@@ -85,7 +85,7 @@ void OrderPool::reserve(size_t additional_objects) {
 // =============================================================================
 
 void OrderPool::emergency_shrink_to_target(size_t target_objects) {
-    std::cout << "[ORDER POOL EMERGENCY] 🚨 Emergency shrink to " << target_objects << " objects" << std::endl;
+    std::cout << "[ORDER POOL EMERGENCY]  Emergency shrink to " << target_objects << " objects" << std::endl;
     
     // Get current stats for logging
     auto stats = get_stats();
@@ -103,7 +103,7 @@ void OrderPool::emergency_shrink_to_target(size_t target_objects) {
 }
 
 void OrderPool::emergency_reserve(size_t additional_objects) {
-    std::cout << "[ORDER POOL EMERGENCY] 🚨 Emergency reserve " << additional_objects << " additional objects" << std::endl;
+    std::cout << "[ORDER POOL EMERGENCY]  Emergency reserve " << additional_objects << " additional objects" << std::endl;
     
     auto stats = get_stats();
     std::cout << "[ORDER POOL EMERGENCY] Current: " << stats.total_allocated 
@@ -168,18 +168,18 @@ void MemoryManager::print_memory_report() const {
     
     // Print formatted report header
     std::cout << "\n" << std::string(50, '=') << std::endl;
-    std::cout << "🧠 MEMORY POOL PERFORMANCE REPORT" << std::endl;
+    std::cout << " MEMORY POOL PERFORMANCE REPORT" << std::endl;
     std::cout << std::string(50, '=') << std::endl;
     
     // Print system memory statistics in KB
     std::cout << std::fixed << std::setprecision(2);
-    std::cout << "📊 SYSTEM MEMORY USAGE:" << std::endl;
+    std::cout << " SYSTEM MEMORY USAGE:" << std::endl;
     std::cout << "   Total Allocated: " << (system_stats.total_allocated_bytes / 1024.0) << " KB" << std::endl;
     std::cout << "   Currently In Use: " << (system_stats.total_in_use_bytes / 1024.0) << " KB" << std::endl;
     std::cout << "   Peak Usage: " << (system_stats.peak_memory_usage / 1024.0) << " KB" << std::endl;
     
     // Print order pool specific statistics
-    std::cout << "\n📈 ORDER POOL STATISTICS:" << std::endl;
+    std::cout << "\n ORDER POOL STATISTICS:" << std::endl;
     std::cout << "   Total Orders: " << order_stats.total_allocated << std::endl;
     std::cout << "   Orders In Use: " << order_stats.in_use << std::endl;
     std::cout << "   Peak Usage: " << order_stats.peak_usage << std::endl;
@@ -193,20 +193,20 @@ void MemoryManager::print_memory_report() const {
         memory_utilization = (static_cast<double>(system_stats.total_in_use_bytes) / 
                              system_stats.total_allocated_bytes) * 100.0;
     }
-    std::cout << "\n⚡ EFFICIENCY METRICS:" << std::endl;
+    std::cout << "\n EFFICIENCY METRICS:" << std::endl;
     std::cout << "   Memory Utilization: " << memory_utilization << "%" << std::endl;
     
     // Provide performance assessment
-    std::cout << "\n🏆 PERFORMANCE ASSESSMENT:" << std::endl;
+    std::cout << "\n PERFORMANCE ASSESSMENT:" << std::endl;
     double hit_rate = order_stats.hit_rate() * 100.0;
     if (hit_rate > 95.0) {
-        std::cout << "   Status: Excellent ✅" << std::endl;
+        std::cout << "   Status: Excellent " << std::endl;
     } else if (hit_rate > 90.0) {
-        std::cout << "   Status: Good 👍" << std::endl;
+        std::cout << "   Status: Good " << std::endl;
     } else if (hit_rate > 80.0) {
-        std::cout << "   Status: Fair ⚠️" << std::endl;
+        std::cout << "   Status: Fair " << std::endl;
     } else {
-        std::cout << "   Status: Poor ❌" << std::endl;
+        std::cout << "   Status: Poor " << std::endl;
     }
     
     std::cout << std::string(50, '=') << std::endl;
@@ -246,12 +246,12 @@ void MemoryManager::optimize_pools(PoolType& pool) {
 }
 
 void MemoryManager::optimize_pools() {
-    std::cout << "[MEMORY MANAGER] 🔧 Optimizing all pools..." << std::endl;
+    std::cout << "[MEMORY MANAGER]  Optimizing all pools..." << std::endl;
     
     // Optimize the order pool
     optimize_pools(order_pool_);
     
-    std::cout << "[MEMORY MANAGER] ✅ Pool optimization complete" << std::endl;
+    std::cout << "[MEMORY MANAGER]  Pool optimization complete" << std::endl;
 }
 
 bool MemoryManager::is_memory_pressure_high() const {
@@ -305,7 +305,7 @@ bool MemoryManager::is_memory_pressure_high() const {
 }
 
 void MemoryManager::emergency_cleanup() {
-    std::cout << "\n[EMERGENCY CLEANUP] ⚠️  Initiating emergency memory cleanup..." << std::endl;
+    std::cout << "\n[EMERGENCY CLEANUP]   Initiating emergency memory cleanup..." << std::endl;
     
     auto system_stats_before = get_system_stats();
     std::cout << "[EMERGENCY CLEANUP] Pre-cleanup memory: " 
@@ -323,7 +323,7 @@ void MemoryManager::emergency_cleanup() {
         // Emergency target: current usage + 50% buffer (vs 20% in normal)
         size_t emergency_target = static_cast<size_t>(order_stats.in_use * 1.5);
         
-        std::cout << "[EMERGENCY CLEANUP] 🔥 Aggressive shrinking - utilization: " 
+        std::cout << "[EMERGENCY CLEANUP]  Aggressive shrinking - utilization: " 
                   << (utilization * 100.0) << "%, target: " << emergency_target << std::endl;
         
         // Execute emergency shrinking
@@ -331,7 +331,7 @@ void MemoryManager::emergency_cleanup() {
     }
     
     // 2. RESET POTENTIALLY STALE STATISTICS
-    std::cout << "[EMERGENCY CLEANUP] 🔄 Resetting stale statistics..." << std::endl;
+    std::cout << "[EMERGENCY CLEANUP]  Resetting stale statistics..." << std::endl;
     
     // Reset peak usage (might be from an unusual spike)
     order_pool_.reset_stats();
@@ -340,12 +340,12 @@ void MemoryManager::emergency_cleanup() {
     peak_memory_usage_.store(system_stats_before.total_in_use_bytes);
     
     // 3. VALIDATE POOL INTEGRITY
-    std::cout << "[EMERGENCY CLEANUP] ✅ Validating pool integrity..." << std::endl;
+    std::cout << "[EMERGENCY CLEANUP]  Validating pool integrity..." << std::endl;
     validate_pools();
     
     // 4. FORCE IMMEDIATE OPTIMIZATION
     // Run optimization with emergency parameters
-    std::cout << "[EMERGENCY CLEANUP] ⚡ Running emergency optimization..." << std::endl;
+    std::cout << "[EMERGENCY CLEANUP]  Running emergency optimization..." << std::endl;
     
     // Note: We can't directly call optimize_pools on order_pool_ because it's not the right type
     // We would need to modify the design or add specific emergency optimization
@@ -354,7 +354,7 @@ void MemoryManager::emergency_cleanup() {
     // Emergency expansion if we're still critically low after cleanup
     if (post_reset_stats.in_use > post_reset_stats.total_allocated * 0.85) {
         size_t emergency_expansion = post_reset_stats.total_allocated; // Double the pool
-        std::cout << "[EMERGENCY CLEANUP] 📈 Still under pressure, emergency expansion by " 
+        std::cout << "[EMERGENCY CLEANUP]  Still under pressure, emergency expansion by " 
                   << emergency_expansion << " objects..." << std::endl;
         
         order_pool_.emergency_reserve(emergency_expansion);
@@ -365,7 +365,7 @@ void MemoryManager::emergency_cleanup() {
     
     size_t memory_freed = system_stats_before.total_allocated_bytes - system_stats_after.total_allocated_bytes;
     
-    std::cout << "[EMERGENCY CLEANUP] 📊 Cleanup complete!" << std::endl;
+    std::cout << "[EMERGENCY CLEANUP]  Cleanup complete!" << std::endl;
     std::cout << "[EMERGENCY CLEANUP] Memory freed: " << (memory_freed / 1024.0) << " KB" << std::endl;
     std::cout << "[EMERGENCY CLEANUP] New allocation: " 
               << (system_stats_after.total_allocated_bytes / 1024.0) << " KB" << std::endl;
@@ -375,13 +375,13 @@ void MemoryManager::emergency_cleanup() {
     
     // 6. ALERT MONITORING SYSTEMS
     if (memory_freed > 0) {
-        std::cout << "[EMERGENCY CLEANUP] ✅ Emergency cleanup successful - " 
+        std::cout << "[EMERGENCY CLEANUP]  Emergency cleanup successful - " 
                   << (memory_freed / 1024.0) << " KB recovered" << std::endl;
     } else {
-        std::cout << "[EMERGENCY CLEANUP] ⚠️  No memory could be freed - system may need external intervention" << std::endl;
+        std::cout << "[EMERGENCY CLEANUP]   No memory could be freed - system may need external intervention" << std::endl;
     }
     
-    std::cout << "[EMERGENCY CLEANUP] 🏁 Emergency cleanup completed\n" << std::endl;
+    std::cout << "[EMERGENCY CLEANUP]  Emergency cleanup completed\n" << std::endl;
 }
 
 // =============================================================================
@@ -390,12 +390,12 @@ void MemoryManager::emergency_cleanup() {
 
 void MemoryManager::print_debug_info() const {
     std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "🔧 MEMORY MANAGER DEBUG INFORMATION" << std::endl;
+    std::cout << " MEMORY MANAGER DEBUG INFORMATION" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
     
     // System-wide memory information
     auto system_stats = get_system_stats();
-    std::cout << "\n📊 SYSTEM MEMORY STATE:" << std::endl;
+    std::cout << "\n SYSTEM MEMORY STATE:" << std::endl;
     std::cout << "   Total Allocated: " << system_stats.total_allocated_bytes << " bytes ("
               << (system_stats.total_allocated_bytes / 1024.0) << " KB)" << std::endl;
     std::cout << "   Total In Use: " << system_stats.total_in_use_bytes << " bytes ("
@@ -406,7 +406,7 @@ void MemoryManager::print_debug_info() const {
     
     // Detailed order pool information
     auto order_stats = order_pool_.get_stats();
-    std::cout << "\n🎯 ORDER POOL DETAILED STATE:" << std::endl;
+    std::cout << "\n ORDER POOL DETAILED STATE:" << std::endl;
     std::cout << "   Pool Address: " << &order_pool_ << std::endl;
     std::cout << "   Total Allocated: " << order_stats.total_allocated << " orders" << std::endl;
     std::cout << "   Currently In Use: " << order_stats.in_use << " orders" << std::endl;
@@ -418,7 +418,7 @@ void MemoryManager::print_debug_info() const {
               << (order_stats.hit_rate() * 100.0) << "%" << std::endl;
     
     // Memory utilization analysis
-    std::cout << "\n📈 UTILIZATION ANALYSIS:" << std::endl;
+    std::cout << "\n UTILIZATION ANALYSIS:" << std::endl;
     if (order_stats.total_allocated > 0) {
         double current_util = static_cast<double>(order_stats.in_use) / order_stats.total_allocated * 100.0;
         double peak_util = static_cast<double>(order_stats.peak_usage) / order_stats.total_allocated * 100.0;
@@ -430,26 +430,26 @@ void MemoryManager::print_debug_info() const {
         
         // Memory pressure indicators
         if (current_util > 90.0) {
-            std::cout << "   ⚠️  CRITICAL: High memory pressure detected!" << std::endl;
+            std::cout << "     CRITICAL: High memory pressure detected!" << std::endl;
         } else if (current_util > 80.0) {
-            std::cout << "   ⚠️  WARNING: Approaching high utilization" << std::endl;
+            std::cout << "     WARNING: Approaching high utilization" << std::endl;
         } else if (current_util < 30.0) {
-            std::cout << "   💡 INFO: Pool may be over-allocated" << std::endl;
+            std::cout << "    INFO: Pool may be over-allocated" << std::endl;
         } else {
-            std::cout << "   ✅ INFO: Utilization within normal range" << std::endl;
+            std::cout << "    INFO: Utilization within normal range" << std::endl;
         }
     }
     
     // Access to underlying pool details via friend relationship
     const auto& underlying_pool = order_pool_.pool_;
-    std::cout << "\n🔍 UNDERLYING MEMORY POOL STATE:" << std::endl;
+    std::cout << "\n UNDERLYING MEMORY POOL STATE:" << std::endl;
     std::cout << "   Pool Address: " << &underlying_pool << std::endl;
     std::cout << "   Total Allocated (atomic): " << underlying_pool.total_allocated() << " objects" << std::endl;
     std::cout << "   Available Objects: " << underlying_pool.available() << " objects" << std::endl;
     std::cout << "   Objects In Use: " << underlying_pool.in_use() << " objects" << std::endl;
     
     // Memory block information
-    std::cout << "\n🧱 MEMORY BLOCK DETAILS:" << std::endl;
+    std::cout << "\n MEMORY BLOCK DETAILS:" << std::endl;
     std::cout << "   Number of Blocks: " << underlying_pool.memory_blocks_.size() << std::endl;
     std::cout << "   Block Size: " << underlying_pool.block_size_ << " objects per block" << std::endl;
     std::cout << "   Growth Factor: " << underlying_pool.growth_factor_ << "x" << std::endl;
@@ -462,20 +462,20 @@ void MemoryManager::print_debug_info() const {
     }
     
     // Performance metrics
-    std::cout << "\n⚡ PERFORMANCE METRICS:" << std::endl;
+    std::cout << "\n PERFORMANCE METRICS:" << std::endl;
     if (order_stats.allocation_requests > 0) {
         double cache_efficiency = order_stats.hit_rate() * 100.0;
         std::cout << "   Cache Efficiency: " << std::fixed << std::setprecision(2) 
                   << cache_efficiency << "%" << std::endl;
         
         if (cache_efficiency > 95.0) {
-            std::cout << "   ✅ Excellent cache performance" << std::endl;
+            std::cout << "    Excellent cache performance" << std::endl;
         } else if (cache_efficiency > 90.0) {
-            std::cout << "   👍 Good cache performance" << std::endl;
+            std::cout << "    Good cache performance" << std::endl;
         } else if (cache_efficiency > 80.0) {
-            std::cout << "   ⚠️  Fair cache performance - consider optimization" << std::endl;
+            std::cout << "     Fair cache performance - consider optimization" << std::endl;
         } else {
-            std::cout << "   ❌ Poor cache performance - requires attention" << std::endl;
+            std::cout << "    Poor cache performance - requires attention" << std::endl;
         }
         
         // Calculate requests per allocation (expansion frequency)
@@ -488,7 +488,7 @@ void MemoryManager::print_debug_info() const {
     }
     
     // Memory fragmentation analysis
-    std::cout << "\n🗂️  FRAGMENTATION ANALYSIS:" << std::endl;
+    std::cout << "\n  FRAGMENTATION ANALYSIS:" << std::endl;
     size_t total_objects = underlying_pool.memory_blocks_.size() * underlying_pool.block_size_;
     size_t wasted_objects = total_objects - order_stats.total_allocated;
     
@@ -501,48 +501,48 @@ void MemoryManager::print_debug_info() const {
     }
     
     // Singleton state information
-    std::cout << "\n🔧 SINGLETON STATE:" << std::endl;
+    std::cout << "\n SINGLETON STATE:" << std::endl;
     std::cout << "   MemoryManager Instance: " << this << std::endl;
     std::cout << "   Peak Memory Tracker: " << peak_memory_usage_.load() << " bytes" << std::endl;
     
     // Memory safety checks
-    std::cout << "\n🛡️  MEMORY SAFETY STATUS:" << std::endl;
+    std::cout << "\n  MEMORY SAFETY STATUS:" << std::endl;
     bool safety_ok = true;
     
     // Check for obvious inconsistencies
     if (order_stats.total_allocated < order_stats.in_use) {
-        std::cout << "   ❌ CRITICAL: total_allocated < in_use" << std::endl;
+        std::cout << "    CRITICAL: total_allocated < in_use" << std::endl;
         safety_ok = false;
     }
     
     if (order_stats.cache_hits > order_stats.allocation_requests) {
-        std::cout << "   ❌ CRITICAL: cache_hits > allocation_requests" << std::endl;
+        std::cout << "    CRITICAL: cache_hits > allocation_requests" << std::endl;
         safety_ok = false;
     }
     
     if (system_stats.total_in_use_bytes > system_stats.total_allocated_bytes) {
-        std::cout << "   ❌ CRITICAL: system in_use > allocated" << std::endl;
+        std::cout << "    CRITICAL: system in_use > allocated" << std::endl;
         safety_ok = false;
     }
     
     if (safety_ok) {
-        std::cout << "   ✅ All safety checks passed" << std::endl;
+        std::cout << "    All safety checks passed" << std::endl;
     }
     
     std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << "🏁 DEBUG INFORMATION COMPLETE" << std::endl;
+    std::cout << " DEBUG INFORMATION COMPLETE" << std::endl;
     std::cout << std::string(60, '=') << std::endl;
 }
 
 void MemoryManager::validate_pools() const {
-    std::cout << "[POOL VALIDATION] 🔍 Validating pool integrity..." << std::endl;
+    std::cout << "[POOL VALIDATION]  Validating pool integrity..." << std::endl;
     
     // Validate order pool
     auto order_stats = order_pool_.get_stats();
     
     // Check basic consistency: total_allocated should >= in_use
     if (order_stats.total_allocated < order_stats.in_use) {
-        std::cout << "[POOL VALIDATION] ❌ ERROR: total_allocated (" << order_stats.total_allocated 
+        std::cout << "[POOL VALIDATION]  ERROR: total_allocated (" << order_stats.total_allocated 
                   << ") < in_use (" << order_stats.in_use << ")" << std::endl;
         return;
     }
@@ -553,13 +553,13 @@ void MemoryManager::validate_pools() const {
     
     // Check peak usage sanity
     if (order_stats.peak_usage > order_stats.total_allocated) {
-        std::cout << "[POOL VALIDATION] ⚠️  WARNING: peak_usage (" << order_stats.peak_usage 
+        std::cout << "[POOL VALIDATION]   WARNING: peak_usage (" << order_stats.peak_usage 
                   << ") > total_allocated (" << order_stats.total_allocated << ")" << std::endl;
     }
     
     // Check hit rate sanity
     if (order_stats.cache_hits > order_stats.allocation_requests) {
-        std::cout << "[POOL VALIDATION] ❌ ERROR: cache_hits (" << order_stats.cache_hits 
+        std::cout << "[POOL VALIDATION]  ERROR: cache_hits (" << order_stats.cache_hits 
                   << ") > allocation_requests (" << order_stats.allocation_requests << ")" << std::endl;
         return;
     }
@@ -569,11 +569,11 @@ void MemoryManager::validate_pools() const {
     
     // Check system memory consistency
     if (system_stats.total_in_use_bytes > system_stats.total_allocated_bytes) {
-        std::cout << "[POOL VALIDATION] ❌ ERROR: system in_use > allocated" << std::endl;
+        std::cout << "[POOL VALIDATION]  ERROR: system in_use > allocated" << std::endl;
         return;
     }
     
-    std::cout << "[POOL VALIDATION] ✅ All validation checks passed" << std::endl;
+    std::cout << "[POOL VALIDATION]  All validation checks passed" << std::endl;
 }
 
 } // namespace hft
