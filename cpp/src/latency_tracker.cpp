@@ -9,46 +9,30 @@ namespace hft {
 // =============================================================================
 
 LatencyTracker::LatencyTracker(size_t window_size) 
-    : window_size_(window_size), session_start_(now()),
-      p95_calculators_{{ApproximatePercentile(95.0), ApproximatePercentile(95.0), 
-                       ApproximatePercentile(95.0), ApproximatePercentile(95.0), 
-                       ApproximatePercentile(95.0), ApproximatePercentile(95.0)}},
-      p99_calculators_{{ApproximatePercentile(99.0), ApproximatePercentile(99.0), 
-                       ApproximatePercentile(99.0), ApproximatePercentile(99.0), 
-                       ApproximatePercentile(99.0), ApproximatePercentile(99.0)}} {}
+    : window_size_(window_size), session_start_(now()) {}
 
 // =============================================================================
-// PRIMARY INTERFACE - ADD LATENCY MEASUREMENTS (OPTIMIZED)
+// PRIMARY INTERFACE - ADD LATENCY MEASUREMENTS
 // =============================================================================
 
 void LatencyTracker::add_latency(LatencyType type, double latency_us) {
     size_t index = static_cast<size_t>(type);
     
-    // Add to legacy deque for compatibility and accurate window management
     latency_windows_[index].push_back(latency_us);
     
-    // Maintain rolling window size for legacy deque
+    // Maintain rolling window size
     while (latency_windows_[index].size() > window_size_) {
         latency_windows_[index].pop_front();
     }
     
-    // Add to fast buffer only if it can maintain same size as deque
-    // Fast buffer has fixed size 1024, so only use it for small windows
-    if (window_size_ <= 1024) {
-        fast_buffers_[index].push(latency_us);
-    }
-    
-    // Update approximate percentile calculators (O(1) operation)
-    p95_calculators_[index].update(latency_us);
-    p99_calculators_[index].update(latency_us);
-    
     // Check for latency spikes
     check_and_record_spike(type, latency_us);
     
-    // Update trend tracking with approximate P95 (much faster)
-    if (latency_windows_[index].size() >= 20) {  // Use deque size for accuracy
-        double p95_estimate = p95_calculators_[index].estimate();
-        update_trend_window(type, p95_estimate);
+    // Update trend tracking using exact P95 from current rolling window.
+    if (latency_windows_[index].size() >= TREND_WINDOW_SIZE) {
+        std::vector<double> window_data(latency_windows_[index].begin(), latency_windows_[index].end());
+        double p95 = calculate_percentile_fast(window_data, 95.0);
+        update_trend_window(type, p95);
     }
 }
 
@@ -58,90 +42,20 @@ void LatencyTracker::add_latency(LatencyType type, const duration_us_t& duration
 }
 
 // =============================================================================
-// OPTIMIZED STATISTICS CALCULATION
+// STATISTICS CALCULATION
 // =============================================================================
 
 LatencyStatistics LatencyTracker::get_statistics(LatencyType type) const {
     size_t index = static_cast<size_t>(type);
     const auto& data = latency_windows_[index];
-    
-    // Check if we have fast buffer data even when regular data is empty
-    auto fast_snapshot = fast_buffers_[index].snapshot();
-    
-    // Use precise calculation for small datasets (tests), small window sizes, 
-    // or when we need exact window size compliance
-    if (!data.empty() && (data.size() <= 100 || window_size_ <= 100)) {
-        std::vector<double> vec_data(data.begin(), data.end());
-        auto stats = calculate_statistics(vec_data);
-        stats.trend = calculate_performance_trend(type);
-        return stats;
-    }
-    
-    // Use fast path only for larger datasets where approximate calculation is acceptable
-    if (p95_calculators_[index].sample_count() >= 100 && !fast_snapshot.empty() && !data.empty()) {
-        auto stats = calculate_statistics_fast(type);
-        // Ensure count respects the actual window size from deque
-        stats.count = data.size();
-        return stats;
-    }
-    
-    // If regular data is empty but we have fast buffer data, use fast path stats
+
     if (data.empty()) {
-        if (!fast_snapshot.empty()) {
-            auto stats = calculate_statistics_fast(type);
-            return stats;
-        }
         return LatencyStatistics{};
     }
     
-    // Fallback to precise calculation
     std::vector<double> vec_data(data.begin(), data.end());
     auto stats = calculate_statistics(vec_data);
     stats.trend = calculate_performance_trend(type);
-    return stats;
-}
-
-LatencyStatistics LatencyTracker::calculate_statistics_fast(LatencyType type) const {
-    LatencyStatistics stats;
-    size_t index = static_cast<size_t>(type);
-    
-    // Get data from fast buffer
-    auto snapshot = fast_buffers_[index].snapshot();
-    if (snapshot.empty()) {
-        return stats;
-    }
-    
-    stats.count = snapshot.size();
-    
-    // Fast min/max from circular buffer
-    auto min_max = fast_buffers_[index].fast_min_max();
-    stats.min_us = min_max.first;
-    stats.max_us = min_max.second;
-    
-    // Calculate mean using fast accumulation
-    double sum = std::accumulate(snapshot.begin(), snapshot.end(), 0.0);
-    stats.mean_us = sum / snapshot.size();
-    
-    // Use approximate percentiles (O(1) operation!)
-    stats.p95_us = p95_calculators_[index].estimate();
-    stats.p99_us = p99_calculators_[index].estimate();
-    
-    // For median, we can approximate as 50th percentile
-    // Or use fast calculation for small datasets
-    if (snapshot.size() < 100) {
-        std::nth_element(snapshot.begin(), snapshot.begin() + snapshot.size()/2, snapshot.end());
-        stats.median_us = snapshot[snapshot.size()/2];
-    } else {
-        // Approximate median - could implement another P-square calculator
-        stats.median_us = stats.mean_us; // Rough approximation
-    }
-    
-    // Calculate standard deviation
-    stats.std_dev_us = calculate_standard_deviation(snapshot, stats.mean_us);
-    
-    // Add performance trend analysis
-    stats.trend = calculate_performance_trend(type);
-    
     return stats;
 }
 
@@ -200,17 +114,6 @@ double LatencyTracker::calculate_percentile_fast(const std::vector<double>& data
     return lower_val * (1.0 - weight) + upper_val * weight;
 }
 
-// Keep legacy method for backward compatibility
-double LatencyTracker::calculate_percentile(const std::deque<double>& data, double percentile) const {
-    if (data.empty() || percentile < 0.0 || percentile > 100.0) {
-        return 0.0;
-    }
-    
-    // Convert to vector and use fast method
-    std::vector<double> vec_data(data.begin(), data.end());
-    return calculate_percentile_fast(vec_data, percentile);
-}
-
 double LatencyTracker::calculate_standard_deviation(const std::vector<double>& data, double mean) const {
     double variance = std::accumulate(data.begin(), data.end(), 0.0,
         [mean](double acc, double value) {
@@ -246,7 +149,7 @@ PerformanceTrendData LatencyTracker::calculate_performance_trend(LatencyType typ
     
     trend_data.sample_count = static_cast<uint32_t>(trend_window.size());
     
-    // Calculate linear regression slope for trend detection (fast implementation)
+    // Calculate linear regression slope for trend detection
     double sum_x = 0, sum_y = 0, sum_xy = 0, sum_x2 = 0;
     double n = static_cast<double>(trend_window.size());
     
@@ -305,7 +208,7 @@ std::string LatencyTracker::trend_to_string(PerformanceTrend trend) const {
 }
 
 // =============================================================================
-// SPIKE DETECTION AND MANAGEMENT (OPTIMIZED)
+// SPIKE DETECTION AND MANAGEMENT
 // =============================================================================
 
 void LatencyTracker::check_and_record_spike(LatencyType type, double latency_us) {
@@ -327,8 +230,6 @@ void LatencyTracker::check_and_record_spike(LatencyType type, double latency_us)
     }
 }
 
-// Note: check_and_record_spike_fast is now defined inline in the header
-
 double LatencyTracker::get_threshold(LatencyType type, SpikesSeverity severity) const noexcept {
     switch(type) {
         case LatencyType::MARKET_DATA_PROCESSING:
@@ -339,6 +240,10 @@ double LatencyTracker::get_threshold(LatencyType type, SpikesSeverity severity) 
             return (severity == SpikesSeverity::WARNING) ? ORDER_CANCELLATION_WARNING_US : ORDER_CANCELLATION_CRITICAL_US;
         case LatencyType::TICK_TO_TRADE:
             return (severity == SpikesSeverity::WARNING) ? TICK_TO_TRADE_WARNING_US : TICK_TO_TRADE_CRITICAL_US;
+        case LatencyType::ORDER_BOOK_UPDATE:
+            return (severity == SpikesSeverity::WARNING) ? ORDER_BOOK_UPDATE_WARNING_US : ORDER_BOOK_UPDATE_CRITICAL_US;
+        case LatencyType::TRADE_EXECUTION_PROCESSING:
+            return (severity == SpikesSeverity::WARNING) ? TRADE_EXECUTION_WARNING_US : TRADE_EXECUTION_CRITICAL_US;
         default:
             return 0.0;
     }
@@ -374,14 +279,6 @@ bool LatencyTracker::should_alert() const {
 }
 
 // =============================================================================
-// FAST TIME FORMATTING
-// =============================================================================
-
-void LatencyTracker::format_spike_timestamp(const LatencySpike& spike, TimeFormatter::TimeBuffer& buffer) const {
-    TimeFormatter::format_time_fast(spike.timestamp, buffer);
-}
-
-// =============================================================================
 // STRING CONVERSION HELPERS
 // =============================================================================
 
@@ -392,6 +289,7 @@ std::string LatencyTracker::latency_type_to_string(LatencyType type) const {
         case LatencyType::ORDER_CANCELLATION: return "Order Cancellation";
         case LatencyType::TICK_TO_TRADE: return "Tick to Trade";
         case LatencyType::ORDER_BOOK_UPDATE: return "Order Book Update";
+        case LatencyType::TRADE_EXECUTION_PROCESSING: return "Trade Execution Processing";
         default: return "Unknown";
     }
 }
@@ -420,12 +318,8 @@ std::string LatencyTracker::assess_performance(const LatencyStatistics& stats, L
     }
 }
 
-bool LatencyTracker::is_performance_acceptable(const LatencyStatistics& stats, LatencyType type) const {
-    return stats.p95_us < get_threshold(type, SpikesSeverity::WARNING);
-}
-
 // =============================================================================
-// REPORTING AND OUTPUT (OPTIMIZED WITH READABLE TIME FORMATTING)
+// REPORTING AND OUTPUT
 // =============================================================================
 
 void LatencyTracker::print_latency_report() const {
@@ -532,7 +426,7 @@ void LatencyTracker::print_detailed_report() const {
         
         for (const auto& spike : recent_spikes) {
             TimeFormatter::TimeBuffer time_buffer, latency_buffer;
-            format_spike_timestamp(spike, time_buffer);
+            TimeFormatter::format_time_fast(spike.timestamp, time_buffer);
             TimeFormatter::format_duration_fast(spike.latency_us, latency_buffer);
             
             std::cout << std::setw(25) << latency_type_to_string(spike.type)
@@ -596,23 +490,12 @@ double LatencyTracker::get_uptime_seconds() const {
 // =============================================================================
 
 void LatencyTracker::reset_statistics() {
-    // Reset approximate percentile calculators
-    for (size_t i = 0; i < static_cast<size_t>(LatencyType::COUNT); ++i) {
-        p95_calculators_[i] = ApproximatePercentile(95.0);
-        p99_calculators_[i] = ApproximatePercentile(99.0);
-    }
-    
     // Reset deque-based structures
     for (auto& window : latency_windows_) {
         window.clear();
     }
     for (auto& trend_window : trend_windows_) {
         trend_window.clear();
-    }
-    
-    // Reset fast buffers using the clear method
-    for (auto& buffer : fast_buffers_) {
-        buffer.clear();
     }
     
     session_start_ = now();
@@ -623,4 +506,3 @@ void LatencyTracker::clear_spike_history() {
 }
 
 } // namespace hft
-
