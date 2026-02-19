@@ -2,30 +2,22 @@
 #include "log_control.hpp"
 #include <iostream>
 #include <iomanip>
-#include <sstream>
 #include <algorithm>
 #include <cstdlib>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
-#include <random>
 
 // WebSocket and JSON libraries
 #include <websocketpp/config/asio_client.hpp>
 #include <websocketpp/client.hpp>
 #include <nlohmann/json.hpp>
 
-// SSL support
-#include <websocketpp/config/asio_no_tls_client.hpp>
-
-// OpenSSL and Sodium removed for HFT optimization
-
 // Boost timer removed for HFT optimization
 
 // Type definitions for WebSocket client
-using WebSocketClient = websocketpp::client<websocketpp::config::asio_tls_client>;
+using WebSocketClient = hft::MarketDataWebSocketClient;
 using WebSocketMessage = WebSocketClient::message_ptr;
-using WebSocketConnection = WebSocketClient::connection_ptr;
 using json = nlohmann::json;
 
 namespace hft {
@@ -68,12 +60,6 @@ void load_dotenv() {
     }
 }
 
-// Base64 functions removed for HFT optimization
-
-// Random hex generation removed for HFT optimization
-
-// JWT functionality removed for HFT optimization
-
 // =============================================================================
 // CONSTRUCTOR AND DESTRUCTOR
 // =============================================================================
@@ -86,10 +72,9 @@ MarketDataFeed::MarketDataFeed(OrderBookEngine& order_book,
     , config_(config)
     , connection_state_(ConnectionState::DISCONNECTED)
     , should_stop_(false)
-    , auto_reconnect_enabled_(true)
-    , websocket_handle_(nullptr) {
+    , auto_reconnect_enabled_(true) {
     
-    std::cout << "[MARKET DATA] Initializing optimized HFT feed for " << config_.product_id << std::endl;
+    std::cout << "[MARKET DATA] Initializing HFT feed for " << config_.product_id << std::endl;
     
     // Load environment variables
     load_dotenv();
@@ -108,32 +93,27 @@ MarketDataFeed::MarketDataFeed(OrderBookEngine& order_book,
     
     // Initialize WebSocket client
     try {
-        auto ws_client = std::make_unique<WebSocketClient>();
+        websocket_client_ = std::make_unique<WebSocketClient>();
         
         // Configure WebSocket client
-        ws_client->clear_access_channels(websocketpp::log::alevel::all);
-        ws_client->clear_error_channels(websocketpp::log::elevel::all);
-        ws_client->set_access_channels(websocketpp::log::alevel::connect);
-        ws_client->set_access_channels(websocketpp::log::alevel::disconnect);
-        ws_client->set_access_channels(websocketpp::log::alevel::app);
+        websocket_client_->clear_access_channels(websocketpp::log::alevel::all);
+        websocket_client_->clear_error_channels(websocketpp::log::elevel::all);
+        websocket_client_->set_access_channels(websocketpp::log::alevel::connect);
+        websocket_client_->set_access_channels(websocketpp::log::alevel::disconnect);
+        websocket_client_->set_access_channels(websocketpp::log::alevel::app);
         
         // Initialize ASIO
-        ws_client->init_asio();
+        websocket_client_->init_asio();
         
         // Set up TLS context
-        ws_client->set_tls_init_handler([](websocketpp::connection_hdl) {
+        websocket_client_->set_tls_init_handler([](websocketpp::connection_hdl) {
             return std::make_shared<boost::asio::ssl::context>(boost::asio::ssl::context::tlsv12_client);
         });
         
-        ws_client->start_perpetual();
+        websocket_client_->start_perpetual();
         
-        // Store the WebSocket client
-        websocket_handle_ = static_cast<void*>(ws_client.release());
-        
-        // Set up event handlers (simplified for HFT)
-        auto* client = static_cast<WebSocketClient*>(websocket_handle_);
-        
-        client->set_open_handler([this](websocketpp::connection_hdl hdl) {
+        // Set up event handlers
+        websocket_client_->set_open_handler([this](websocketpp::connection_hdl hdl) {
             std::cout << "[MARKET DATA] WebSocket connected." << std::endl;
             connection_state_.store(ConnectionState::CONNECTED);
             connection_hdl_ = hdl;
@@ -142,7 +122,7 @@ MarketDataFeed::MarketDataFeed(OrderBookEngine& order_book,
             send_subscriptions(hdl);
         });
 
-        client->set_close_handler([this](websocketpp::connection_hdl /* hdl */) {
+        websocket_client_->set_close_handler([this](websocketpp::connection_hdl /* hdl */) {
             std::cout << "[MARKET DATA] WebSocket disconnected." << std::endl;
             connection_state_.store(ConnectionState::DISCONNECTED);
             if (auto_reconnect_enabled_.load()) {
@@ -150,7 +130,7 @@ MarketDataFeed::MarketDataFeed(OrderBookEngine& order_book,
             }
         });
 
-        client->set_message_handler([this](websocketpp::connection_hdl /* hdl */, WebSocketMessage msg) {
+        websocket_client_->set_message_handler([this](websocketpp::connection_hdl /* hdl */, WebSocketMessage msg) {
             if (msg->get_opcode() == websocketpp::frame::opcode::text) {
                 // Capture arrival time immediately at WebSocket level
                 auto arrival_time = now_monotonic_raw();
@@ -162,7 +142,7 @@ MarketDataFeed::MarketDataFeed(OrderBookEngine& order_book,
         
     } catch (const std::exception& ex) {
         std::cerr << "[MARKET DATA] Failed to initialize WebSocket client: " << ex.what() << std::endl;
-        websocket_handle_ = nullptr;
+        websocket_client_.reset();
     }
 
     // Initialize statistics
@@ -179,19 +159,6 @@ MarketDataFeed::~MarketDataFeed() {
     
     // Stop all operations
     stop();
-    
-    // Clean up WebSocket client
-    if (websocket_handle_) {
-        try {
-            auto* client = static_cast<WebSocketClient*>(websocket_handle_);
-            client->stop();
-            delete client;
-            websocket_handle_ = nullptr;
-            std::cout << "[MARKET DATA] WebSocket client cleaned up" << std::endl;
-        } catch (const std::exception& ex) {
-            std::cerr << "[MARKET DATA] Error cleaning up WebSocket client: " << ex.what() << std::endl;
-        }
-    }
     
     // Print final statistics
     auto stats = get_statistics();
@@ -454,7 +421,7 @@ double MarketDataFeed::get_avg_processing_latency_us() const {
 bool MarketDataFeed::establish_connection() {
     std::cout << "[MARKET DATA] Establishing connection to Advanced Trade WebSocket" << std::endl;
     
-    if (!websocket_handle_) {
+    if (!websocket_client_) {
         std::cerr << "[MARKET DATA] WebSocket client not initialized" << std::endl;
         return false;
     }
@@ -470,11 +437,9 @@ bool MarketDataFeed::establish_connection() {
     connection_state_.store(ConnectionState::CONNECTING);
     
     try {
-        auto* client = static_cast<WebSocketClient*>(websocket_handle_);
-        
         // Connect to Advanced Trade WebSocket URL
         websocketpp::lib::error_code ec;
-        auto conn = client->get_connection("wss://advanced-trade-ws.coinbase.com", ec);
+        auto conn = websocket_client_->get_connection("wss://advanced-trade-ws.coinbase.com", ec);
 
         if (ec) {
             std::cerr << "[MARKET DATA] Failed to create connection: " << ec.message() << std::endl;
@@ -482,12 +447,12 @@ bool MarketDataFeed::establish_connection() {
             return false;
         }
         
-        client->connect(conn);
+        websocket_client_->connect(conn);
         
         std::cout << "[MARKET DATA] Connection initiated successfully" << std::endl;
         
-        // Wait for connection to establish (simplified)
-        const int timeout_ms = 5000;  // Reduced timeout for HFT
+        // Wait for connection to establish
+        const int timeout_ms = 5000;
         const int check_interval_ms = 100;
         int elapsed_ms = 0;
         
@@ -525,14 +490,12 @@ void MarketDataFeed::close_connection() {
     
     connection_state_.store(ConnectionState::DISCONNECTING);
     
-    if (websocket_handle_) {
+    if (websocket_client_) {
         try {
-            auto* client = static_cast<WebSocketClient*>(websocket_handle_);
-            
             if (!connection_hdl_.expired()) {
                 try {
                     websocketpp::lib::error_code ec;
-                    client->close(connection_hdl_, websocketpp::close::status::going_away, "Application shutting down", ec);
+                    websocket_client_->close(connection_hdl_, websocketpp::close::status::going_away, "Application shutting down", ec);
                     if (ec) {
                         std::cout << "[MARKET DATA] Error closing WebSocket connection: " << ec.message() << std::endl;
                     }
@@ -541,14 +504,14 @@ void MarketDataFeed::close_connection() {
                 }
             }
 
-            client->stop();
+            websocket_client_->stop();
             
         } catch (const std::exception& ex) {
             std::cerr << "[MARKET DATA] Error during connection cleanup: " << ex.what() << std::endl;
         }
     }
     
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));  // Reduced for HFT
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
     
     connection_state_.store(ConnectionState::DISCONNECTED);
 }
@@ -556,13 +519,11 @@ void MarketDataFeed::close_connection() {
 void MarketDataFeed::websocket_thread_main() {
     std::cout << "[MARKET DATA] WebSocket thread started" << std::endl;
     
-    if (websocket_handle_) {
+    if (websocket_client_) {
         try {
-            auto* client = static_cast<WebSocketClient*>(websocket_handle_);
-            
             // Run continuously until shutdown.
             while (!should_stop_.load()) {
-                client->run_one();  // Run one iteration instead of blocking run()
+                websocket_client_->run_one();  // Run one iteration instead of blocking run()
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
             
@@ -588,15 +549,14 @@ void MarketDataFeed::send_subscriptions(websocketpp::connection_hdl hdl) {
         products = subscribed_products_;
     }
     
-    // FIXED: Use the correct Coinbase Advanced Trade API subscription format
+    // Use the correct Coinbase Advanced Trade API subscription format
     auto sub = [&](const std::string& channel) {
         json msg = {
             {"type", "subscribe"},
             {"channel", channel},
             {"product_ids", products}
         };
-        auto* client = static_cast<WebSocketClient*>(websocket_handle_);
-        client->send(hdl, msg.dump(), websocketpp::frame::opcode::text);
+        websocket_client_->send(hdl, msg.dump(), websocketpp::frame::opcode::text);
         std::cout << "[MARKET DATA] >>> Subscribing to " << channel << " for products: ";
         for (const auto& product : products) {
             std::cout << product << " ";
@@ -609,41 +569,12 @@ void MarketDataFeed::send_subscriptions(websocketpp::connection_hdl hdl) {
     sub("level2");
     sub("market_trades");
     
-    // Also try the alternative channel names
-    sub("l2_data");
-    sub("ticker");
-    
     connection_state_.store(ConnectionState::SUBSCRIBED);
     std::cout << "[MARKET DATA] Subscriptions sent successfully" << std::endl;
 }
 
-void MarketDataFeed::start_jwt_refresh_timer(websocketpp::connection_hdl /* hdl */) {
-    // Simplified for HFT - no JWT refresh needed
-}
-
-void MarketDataFeed::process_message(const std::string& raw_message) {
-    // Fallback method for backward compatibility
-    auto arrival_time = now_monotonic_raw();
-    process_message_with_arrival_time(raw_message, arrival_time);
-}
-
 void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_message, timestamp_t arrival_time) {
     ScopedCoutSilencer silence_hot_path(!kEnableHotPathLogging);
-
-    // Calculate real market data processing latency from arrival to processing start
-    auto processing_start = now_monotonic_raw();
-    auto network_to_processing_latency = time_diff_us(arrival_time, processing_start);
-    
-    // Skip latency tracking for the first few messages (connection setup)
-    static int message_count = 0;
-    message_count++;
-    
-    // Only track latency after the first 3 messages (connection and subscription setup)
-    if (message_count > 3) {
-        latency_tracker_.add_latency_fast_path(LatencyType::MARKET_DATA_PROCESSING, to_microseconds(network_to_processing_latency));
-    }
-    
-    // Message #" << message_count << " (" << raw_message.length() << " bytes)
     
     // Update received message count
     {
@@ -664,17 +595,11 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
             
             if (channel == "market_trades") {
                 handle_trade_message_with_arrival_time(raw_message, arrival_time);
-            } else if (channel == "level2" || channel == "l2_data") {
+            } else if (channel == "level2") {
                 // Processing orderbook data
                 handle_book_message_with_arrival_time(raw_message, arrival_time);
-            } else if (channel == "ticker") {
-                // Handle ticker messages if needed
-                std::lock_guard<std::mutex> lock(stats_mutex_);
-                statistics_.messages_processed++;
-            } else if (channel == "subscriptions") {
-                // Handle subscription confirmations
-                std::lock_guard<std::mutex> lock(stats_mutex_);
-                statistics_.messages_processed++;
+            } else if (channel == "ticker" || channel == "subscriptions") {
+                // Non-book/trade channels are intentionally ignored.
             } else {
                 // Unknown channel - log and ignore
                 std::cout << "[MARKET DATA] Unknown channel: " << channel << std::endl;
@@ -683,141 +608,15 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
             update_statistics(CoinbaseMessageType::UNKNOWN);
             return;
         }
-        
-        // Fallback to old format parsing
-        auto msg_type = parse_message_type(raw_message);
-        
-        switch (msg_type) {
-            case CoinbaseMessageType::MATCH:
-                handle_trade_message(raw_message);
-                break;
-            case CoinbaseMessageType::SNAPSHOT:
-            case CoinbaseMessageType::L2UPDATE:
-                handle_book_message(raw_message);
-                break;
-            case CoinbaseMessageType::HEARTBEAT:
-                handle_heartbeat_message(raw_message);
-                break;
-            case CoinbaseMessageType::ERROR_MSG:
-                handle_error_message(raw_message);
-                break;
-            default:
-                // Unknown message type - log and ignore
-//                 std::cout << " DEBUG: Unknown message type - content: " << raw_message.substr(0, 200) << "..." << std::endl;
-                break;
-        }
-        
-        update_statistics(msg_type);
+
+        // Strict Advanced Trade mode: ignore non-channel payloads.
+        std::cout << "[MARKET DATA] Unsupported message format (missing channel/events), ignoring" << std::endl;
+        update_statistics(CoinbaseMessageType::UNKNOWN);
         
     } catch (const std::exception& ex) {
         std::cerr << "[MARKET DATA] Error processing message: " << ex.what() << std::endl;
         std::cerr << "[MARKET DATA] Raw message: " << raw_message.substr(0, 200) << "..." << std::endl;
     }
-}
-
-// =============================================================================
-// OPTIMIZED FAST PATH METHODS FOR HFT
-// =============================================================================
-
-void MarketDataFeed::process_message_fast(const std::string& raw_message) {
-    MEASURE_MARKET_DATA_LATENCY_FAST(latency_tracker_);
-    
-    std::cout << " DEBUG: process_message_fast called with message length: " << raw_message.length() << std::endl;
-    
-    try {
-        auto json = nlohmann::json::parse(raw_message);
-        
-        // Fast path: Direct message type detection
-        if (json.contains("events") && json["events"].is_array() && !json["events"].empty()) {
-            auto& first_event = json["events"][0];
-            
-            if (first_event.contains("trades")) {
-                std::cout << " DEBUG: Processing trade in fast path" << std::endl;
-                process_trade_fast(first_event);
-            } else if (first_event.contains("updates")) {
-                std::cout << " DEBUG: Processing book update in fast path" << std::endl;
-                process_book_update_fast(first_event);
-            }
-        }
-        
-        // Update statistics
-        {
-            std::lock_guard<std::mutex> lock(stats_mutex_);
-            statistics_.messages_processed++;
-            statistics_.last_message_time = now();
-        }
-        
-    } catch (const std::exception& ex) {
-        // Minimal error handling for speed
-        std::cout << " DEBUG: Error in fast path: " << ex.what() << std::endl;
-    }
-}
-
-void MarketDataFeed::process_trade_fast(const nlohmann::json& event) {
-    if (!event["trades"].is_array() || event["trades"].empty()) return;
-    
-    auto& trade_data = event["trades"][0];
-    
-    // Fast trade parsing
-    double price = std::stod(trade_data["price"].get<std::string>());
-    double size = std::stod(trade_data["size"].get<std::string>());
-    Side side = (trade_data["side"].get<std::string>() == "buy") ? Side::BUY : Side::SELL;
-    
-    // Direct order book update (no intermediate structures)
-    update_order_book_from_trade_fast(price, size, side);
-    
-    // Update statistics
-    {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        statistics_.trades_processed++;
-    }
-}
-
-void MarketDataFeed::process_book_update_fast(const nlohmann::json& event) {
-    auto& updates = event["updates"];
-    
-    for (const auto& update : updates) {
-        if (!update.contains("side") || !update.contains("price_level") || !update.contains("new_quantity")) {
-            continue;
-        }
-        
-        double price = std::stod(update["price_level"].get<std::string>());
-        double size = std::stod(update["new_quantity"].get<std::string>());
-        Side side = (update["side"].get<std::string>() == "bid") ? Side::BUY : Side::SELL;
-        
-        // Direct order book update
-        update_order_book_from_l2update_fast(side, price, size);
-    }
-    
-    // Update statistics
-    {
-        std::lock_guard<std::mutex> lock(stats_mutex_);
-        statistics_.book_updates_processed++;
-    }
-}
-
-void MarketDataFeed::update_order_book_from_trade_fast(double price, double size, Side side) {
-    // Direct integration with OrderBookEngine - no intermediate structures
-    // This is the hot path for HFT
-    
-    // Create synthetic trade execution for OrderBookEngine
-    TradeExecution trade;
-    trade.trade_id = 0;  // Will be assigned by OrderBookEngine
-    trade.price = price;
-    trade.quantity = size;
-    trade.aggressor_side = side;  // Use aggressor_side instead of side
-    trade.timestamp = now();
-    
-    // Process trade directly in OrderBookEngine
-    order_book_.process_market_data_trade(trade);
-}
-
-void MarketDataFeed::update_order_book_from_l2update_fast(Side side, double price, double size) {
-    // TODO: wire incremental level updates directly into OrderBookEngine.
-    // The signal path is still triggered via the outer book callback.
-    (void)side;
-    (void)price;
-    (void)size;
 }
 
 void MarketDataFeed::handle_trade_message_with_arrival_time(const std::string& message, timestamp_t arrival_time) {
@@ -936,54 +735,6 @@ void MarketDataFeed::handle_error_message(const std::string& message) {
 // MESSAGE PARSING FUNCTIONS
 // =============================================================================
 
-CoinbaseMessageType MarketDataFeed::parse_message_type(const std::string& message) {
-    try {
-        auto json = nlohmann::json::parse(message);
-        
-        // Check if this is the new Advanced Trade format with nested events
-        if (json.contains("events") && json["events"].is_array() && !json["events"].empty()) {
-            auto& first_event = json["events"][0];
-            if (first_event.contains("type")) {
-                std::string type_str = first_event["type"].get<std::string>();
-
-                if (type_str == "match") {
-                    return CoinbaseMessageType::MATCH;
-                } else if (type_str == "snapshot") {
-                    return CoinbaseMessageType::SNAPSHOT;
-                } else if (type_str == "l2update") {
-                    return CoinbaseMessageType::L2UPDATE;
-                } else if (type_str == "heartbeat") {
-                    return CoinbaseMessageType::HEARTBEAT;
-                } else if (type_str == "update") {
-                    // Handle "update" type for L2 updates
-                    return CoinbaseMessageType::L2UPDATE;
-                }
-            }
-        }
-        
-        // Fallback to old format (direct type field)
-        if (json.contains("type")) {
-            std::string type_str = json["type"].get<std::string>();
-
-            if (type_str == "match") {
-                return CoinbaseMessageType::MATCH;
-            } else if (type_str == "snapshot") {
-                return CoinbaseMessageType::SNAPSHOT;
-            } else if (type_str == "l2update") {
-                return CoinbaseMessageType::L2UPDATE;
-            } else if (type_str == "heartbeat") {
-                return CoinbaseMessageType::HEARTBEAT;
-            }
-        }
-    } catch (const nlohmann::json::parse_error& ex) {
-        std::cerr << "[MARKET DATA] JSON parse error: " << ex.what() << std::endl;
-    } catch (const std::exception& ex) {
-        std::cerr << "[MARKET DATA] Error parsing message: " << ex.what() << std::endl;
-    }
-    
-    return CoinbaseMessageType::UNKNOWN;
-}
-
 CoinbaseTradeMessage MarketDataFeed::parse_trade_message(const std::string& message) {
     CoinbaseTradeMessage trade;
     
@@ -1013,35 +764,12 @@ CoinbaseTradeMessage MarketDataFeed::parse_trade_message(const std::string& mess
                 trade.parsed_side = (trade.side == "buy") ? Side::BUY : Side::SELL;
                 trade.parsed_time = now();
                 
-                // DEBUG: Log actual trade data
-                std::cout << " TRADE PARSE: size='" << trade.size << "' -> parsed_size=" 
-                          << trade.parsed_size << " price='" << trade.price << "' -> parsed_price=" 
-                          << trade.parsed_price << std::endl;
-                
                 return trade;
             }
         }
         
-        // Fallback to old format (direct trade fields)
-        trade.trade_id = json["trade_id"].get<std::string>();
-        trade.maker_order_id = json["maker_order_id"].get<std::string>();
-        trade.taker_order_id = json["taker_order_id"].get<std::string>();
-        trade.side = json["side"].get<std::string>();
-        trade.size = json["size"].get<std::string>();
-        trade.price = json["price"].get<std::string>();
-        trade.product_id = json["product_id"].get<std::string>();
-        trade.sequence = json["sequence"].get<std::string>();
-        trade.time = json["time"].get<std::string>();
+        std::cout << "[MARKET DATA] Unsupported trade payload in Advanced Trade mode" << std::endl;
         
-        trade.parsed_price = std::stod(trade.price);
-        trade.parsed_size = std::stod(trade.size);
-        trade.parsed_side = (trade.side == "buy") ? Side::BUY : Side::SELL;
-        trade.parsed_time = now();
-        
-        // DEBUG: Log actual trade data (fallback path)
-        std::cout << " TRADE PARSE (fallback): size='" << trade.size << "' -> parsed_size=" 
-                  << trade.parsed_size << " price='" << trade.price << "' -> parsed_price=" 
-                  << trade.parsed_price << std::endl;
     } catch (const nlohmann::json::parse_error& ex) {
         std::cerr << "[MARKET DATA] JSON parse error for trade message: " << ex.what() << std::endl;
         std::cerr << "[MARKET DATA] Raw message: " << message << std::endl;
@@ -1096,26 +824,7 @@ CoinbaseBookMessage MarketDataFeed::parse_book_message(const std::string& messag
             return book;
         }
         
-        // Fallback to old format (direct book fields)
-        book.type = json["type"].get<std::string>();
-        book.product_id = json["product_id"].get<std::string>();
-        book.time = json["time"].get<std::string>();
-        book.parsed_time = now();
-
-        if (json.contains("changes")) {
-            book.changes = json["changes"].get<std::vector<std::vector<std::string>>>();
-            
-            for (const auto& change : book.changes) {
-                if (change.size() >= 3) {
-                    std::string side_str = change[0];
-                    double price = std::stod(change[1]);
-                    double size = std::stod(change[2]);
-                    Side side = (side_str == "buy") ? Side::BUY : Side::SELL;
-                    
-                    book.parsed_changes.emplace_back(side, price, size);
-                }
-            }
-        }
+        std::cout << "[MARKET DATA] Unsupported book payload in Advanced Trade mode" << std::endl;
     } catch (const nlohmann::json::parse_error& ex) {
         std::cerr << "[MARKET DATA] JSON parse error for book message: " << ex.what() << std::endl;
     } catch (const std::exception& ex) {
@@ -1148,53 +857,112 @@ void MarketDataFeed::update_order_book_from_trade(const CoinbaseTradeMessage& tr
 
 void MarketDataFeed::update_order_book_from_snapshot(const CoinbaseBookMessage& book) {
     std::cout << "[MARKET DATA] Processing book snapshot for " << book.product_id << std::endl;
-    
-    // Create market depth snapshot for OrderBookEngine
-    MarketDepth depth;
-    depth.timestamp = book.parsed_time;
-    depth.depth_levels = book.parsed_changes.size();
-    
-    // Convert parsed changes to depth levels
-    for (const auto& change : book.parsed_changes) {
-        Side side = std::get<0>(change);
-        price_t price = std::get<1>(change);
-        quantity_t quantity = std::get<2>(change);
-        
-        if (side == Side::BUY) {
-            depth.bids.push_back({price, quantity});
-        } else {
-            depth.asks.push_back({price, quantity});
-        }
-    }
-    
-    // Apply snapshot to OrderBookEngine
-    order_book_.apply_market_data_update(depth);
+    rebuild_local_book_from_snapshot(book);
+    publish_local_book(book.parsed_time);
 }
 
 void MarketDataFeed::update_order_book_from_l2update(const CoinbaseBookMessage& book) {
     std::cout << "[MARKET DATA] Processing L2 update for " << book.product_id 
               << " with " << book.parsed_changes.size() << " changes" << std::endl;
-    
-    // Process each change individually for L2 updates
+    apply_local_book_changes(book);
+    publish_local_book(book.parsed_time);
+}
+
+void MarketDataFeed::rebuild_local_book_from_snapshot(const CoinbaseBookMessage& book) {
+    std::lock_guard<std::mutex> lock(local_book_mutex_);
+
+    local_bids_.clear();
+    local_asks_.clear();
+
     for (const auto& change : book.parsed_changes) {
         Side side = std::get<0>(change);
         price_t price = std::get<1>(change);
         quantity_t quantity = std::get<2>(change);
-        
-        // Use the fast path for individual updates
-        update_order_book_from_l2update_fast(side, price, quantity);
+
+        if (price <= 0.0 || quantity <= 0.0) {
+            continue;
+        }
+
+        if (side == Side::BUY) {
+            local_bids_[price] = quantity;
+        } else {
+            local_asks_[price] = quantity;
+        }
     }
+
+    local_book_initialized_ = true;
+}
+
+void MarketDataFeed::apply_local_book_changes(const CoinbaseBookMessage& book) {
+    std::lock_guard<std::mutex> lock(local_book_mutex_);
+
+    if (!local_book_initialized_) {
+        std::cout << "[MARKET DATA] WARNING: Received L2 update before snapshot; bootstrapping from incremental data." << std::endl;
+        local_book_initialized_ = true;
+    }
+
+    for (const auto& change : book.parsed_changes) {
+        Side side = std::get<0>(change);
+        price_t price = std::get<1>(change);
+        quantity_t quantity = std::get<2>(change);
+
+        if (price <= 0.0) {
+            continue;
+        }
+
+        if (side == Side::BUY) {
+            if (quantity <= 0.0) {
+                local_bids_.erase(price);
+            } else {
+                local_bids_[price] = quantity;
+            }
+        } else {
+            if (quantity <= 0.0) {
+                local_asks_.erase(price);
+            } else {
+                local_asks_[price] = quantity;
+            }
+        }
+    }
+}
+
+void MarketDataFeed::publish_local_book(timestamp_t book_time) {
+    MarketDepth depth;
+
+    {
+        std::lock_guard<std::mutex> lock(local_book_mutex_);
+        if (!local_book_initialized_) {
+            return;
+        }
+
+        const size_t level_count = local_bids_.size() + local_asks_.size();
+
+        // Force snapshot semantics even when one side is temporarily empty.
+        depth.depth_levels = static_cast<uint32_t>(level_count == 0 ? 1 : level_count);
+        depth.timestamp = (book_time == timestamp_t{}) ? now() : book_time;
+
+        depth.bids.reserve(local_bids_.size());
+        depth.asks.reserve(local_asks_.size());
+
+        for (const auto& [price, quantity] : local_bids_) {
+            if (quantity > 0.0) {
+                depth.bids.emplace_back(price, quantity);
+            }
+        }
+
+        for (const auto& [price, quantity] : local_asks_) {
+            if (quantity > 0.0) {
+                depth.asks.emplace_back(price, quantity);
+            }
+        }
+    }
+
+    order_book_.apply_market_data_update(depth);
 }
 
 void MarketDataFeed::notify_error(const std::string& error_message) {
     if (error_callback_) {
         error_callback_(error_message);
-    }
-}
-
-void MarketDataFeed::notify_connection_state_change(ConnectionState new_state, const std::string& message) {
-    if (connection_callback_) {
-        connection_callback_(new_state, message);
     }
 }
 

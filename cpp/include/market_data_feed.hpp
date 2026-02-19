@@ -9,9 +9,8 @@
 #include <thread>
 #include <functional>
 #include <vector>
-#include <queue>
 #include <mutex>
-#include <condition_variable>
+#include <map>
 
 // Forward declarations for WebSocket
 #include <websocketpp/config/asio_client.hpp>
@@ -23,6 +22,8 @@
 // Sodium removed for HFT optimization
 
 namespace hft {
+
+using MarketDataWebSocketClient = websocketpp::client<websocketpp::config::asio_tls_client>;
 
 /**
  * Market data connection states
@@ -93,7 +94,7 @@ struct CoinbaseBookMessage {
 };
 
 /**
- * Market data statistics (simplified for HFT)
+ * Market data statistics
  */
 struct MarketDataStats {
     uint64_t messages_processed;
@@ -106,7 +107,7 @@ struct MarketDataStats {
 };
 
 /**
- * Configuration for market data feed (optimized for HFT)
+ * Configuration for market data feed
  */
 struct MarketDataConfig {
     std::string coinbase_api_key;
@@ -114,11 +115,11 @@ struct MarketDataConfig {
     std::string websocket_url = "wss://advanced-trade-ws.coinbase.com";
     std::string product_id = "BTC-USD";
     
-    // Subscription options (simplified)
+    // Subscription options
     bool subscribe_to_level2 = true;
     bool subscribe_to_matches = true;
     
-    // Performance settings (optimized)
+    // Performance settings
     uint32_t reconnect_delay_ms = 1000;  // Faster reconnection for HFT
     uint32_t message_queue_size = 1000;  // Message queue size for buffering
     
@@ -286,6 +287,12 @@ private:
     // Statistics and monitoring
     mutable std::mutex stats_mutex_;
     MarketDataStats statistics_;
+
+    // Normalized local L2 book state (external market levels only)
+    mutable std::mutex local_book_mutex_;
+    std::map<price_t, quantity_t, std::greater<price_t>> local_bids_;
+    std::map<price_t, quantity_t, std::less<price_t>> local_asks_;
+    bool local_book_initialized_ = false;
     
     // Event callbacks
     ConnectionStateCallback connection_callback_;
@@ -293,8 +300,8 @@ private:
     BookMessageCallback book_callback_;
     ErrorCallback error_callback_;
     
-    // WebSocket connection handle (implementation-specific)
-    void* websocket_handle_;  // Will be cast to actual WebSocket library type
+    // Typed WebSocket client owned by this feed.
+    std::unique_ptr<MarketDataWebSocketClient> websocket_client_;
     
     // WebSocket connection handle for managing active connections
     websocketpp::connection_hdl connection_hdl_;
@@ -312,10 +319,8 @@ private:
     
     // Subscription management
     void send_subscriptions(websocketpp::connection_hdl hdl);
-    void start_jwt_refresh_timer(websocketpp::connection_hdl hdl);
     
     // Message processing
-    void process_message(const std::string& raw_message);
     void process_message_with_arrival_time(const std::string& raw_message, timestamp_t arrival_time);
     void handle_trade_message(const std::string& message);
     void handle_trade_message_with_arrival_time(const std::string& message, timestamp_t arrival_time);
@@ -324,15 +329,7 @@ private:
     void handle_heartbeat_message(const std::string& message);
     void handle_error_message(const std::string& message);
     
-    // OPTIMIZED: Fast path methods for HFT
-    void process_message_fast(const std::string& raw_message);
-    void process_trade_fast(const nlohmann::json& event);
-    void process_book_update_fast(const nlohmann::json& event);
-    void update_order_book_from_trade_fast(double price, double size, Side side);
-    void update_order_book_from_l2update_fast(Side side, double price, double size);
-    
     // Message parsing
-    CoinbaseMessageType parse_message_type(const std::string& message);
     CoinbaseTradeMessage parse_trade_message(const std::string& message);
     CoinbaseBookMessage parse_book_message(const std::string& message);
     
@@ -340,6 +337,9 @@ private:
     void update_order_book_from_trade(const CoinbaseTradeMessage& trade);
     void update_order_book_from_snapshot(const CoinbaseBookMessage& book);
     void update_order_book_from_l2update(const CoinbaseBookMessage& book);
+    void rebuild_local_book_from_snapshot(const CoinbaseBookMessage& book);
+    void apply_local_book_changes(const CoinbaseBookMessage& book);
+    void publish_local_book(timestamp_t book_time);
     
     // Performance tracking
     void update_statistics(CoinbaseMessageType msg_type);
@@ -350,14 +350,6 @@ private:
     
     // Error handling
     void notify_error(const std::string& error_message);
-    void notify_connection_state_change(ConnectionState new_state, const std::string& message = "");
-    
-    // Utility functions
-    std::string create_subscription_json() const;
-    std::string create_auth_signature(const std::string& message) const;
-    std::string create_hmac_signature(const std::string& message, const std::string& secret) const;
-    bool validate_message(const std::string& message) const;
-    void log_message(const std::string& level, const std::string& message) const;
 };
 
 /**
