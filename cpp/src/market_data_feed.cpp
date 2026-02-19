@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 // WebSocket and JSON libraries
 #include <websocketpp/config/asio_client.hpp>
@@ -568,6 +569,9 @@ void MarketDataFeed::send_subscriptions(websocketpp::connection_hdl hdl) {
     // Subscribe to the channels we need for market making
     sub("level2");
     sub("market_trades");
+
+    // One-time startup summary for channel correctness debugging.
+    std::cerr << "[MARKET DATA] DEBUG CHANNEL SUMMARY: outbound=level2,market_trades inbound_observed=<none yet>" << std::endl;
     
     connection_state_.store(ConnectionState::SUBSCRIBED);
     std::cout << "[MARKET DATA] Subscriptions sent successfully" << std::endl;
@@ -591,27 +595,57 @@ void MarketDataFeed::process_message_with_arrival_time(const std::string& raw_me
         // Handle new Advanced Trade format
         if (json.contains("channel") && json.contains("events")) {
             std::string channel = json["channel"].get<std::string>();
-            // Received " << channel << " message"
+            // Inbound channel observability: log new channels immediately and
+            // periodically print counts so we can verify Coinbase payload shape.
+            static std::mutex inbound_channel_stats_mutex;
+            static std::map<std::string, uint64_t> inbound_channel_counts;
+            static timestamp_t last_channel_summary_time{};
+            {
+                std::lock_guard<std::mutex> lock(inbound_channel_stats_mutex);
+                uint64_t& count = inbound_channel_counts[channel];
+                count++;
+                if (count == 1) {
+                    std::cerr << "[MARKET DATA] <<< New inbound channel from Coinbase: " << channel << std::endl;
+                }
+
+                const auto now_time = now();
+                if (last_channel_summary_time == timestamp_t{} ||
+                    (now_time - last_channel_summary_time) >= std::chrono::seconds(5)) {
+                    std::ostringstream summary;
+                    bool first = true;
+                    for (const auto& [name, seen] : inbound_channel_counts) {
+                        if (!first) {
+                            summary << ", ";
+                        }
+                        summary << name << ":" << seen;
+                        first = false;
+                    }
+                    std::cerr << "[MARKET DATA] <<< Inbound channel counts: " << summary.str() << std::endl;
+                    last_channel_summary_time = now_time;
+                }
+            }
             
             if (channel == "market_trades") {
                 handle_trade_message_with_arrival_time(raw_message, arrival_time);
-            } else if (channel == "level2") {
+            } else if (channel == "level2" || channel == "l2_data") {
                 // Processing orderbook data
                 handle_book_message_with_arrival_time(raw_message, arrival_time);
             } else if (channel == "ticker" || channel == "subscriptions") {
                 // Non-book/trade channels are intentionally ignored.
             } else {
                 // Unknown channel - log and ignore
-                std::cout << "[MARKET DATA] Unknown channel: " << channel << std::endl;
+                std::cerr << "[MARKET DATA] Unknown channel: " << channel << std::endl;
             }
             
             update_statistics(CoinbaseMessageType::UNKNOWN);
+            maybe_log_local_book();
             return;
         }
 
         // Strict Advanced Trade mode: ignore non-channel payloads.
         std::cout << "[MARKET DATA] Unsupported message format (missing channel/events), ignoring" << std::endl;
         update_statistics(CoinbaseMessageType::UNKNOWN);
+        maybe_log_local_book();
         
     } catch (const std::exception& ex) {
         std::cerr << "[MARKET DATA] Error processing message: " << ex.what() << std::endl;
@@ -958,6 +992,48 @@ void MarketDataFeed::publish_local_book(timestamp_t book_time) {
     }
 
     order_book_.apply_market_data_update(depth);
+}
+
+void MarketDataFeed::maybe_log_local_book() {
+    constexpr auto kLogInterval = std::chrono::seconds(5);
+
+    price_t best_bid = 0.0;
+    quantity_t best_bid_qty = 0.0;
+    price_t best_ask = 0.0;
+    quantity_t best_ask_qty = 0.0;
+    size_t bid_levels = 0;
+    size_t ask_levels = 0;
+    bool initialized = false;
+
+    {
+        std::lock_guard<std::mutex> lock(local_book_mutex_);
+        const auto now_time = now();
+        if (last_local_book_log_time_ != timestamp_t{} &&
+            (now_time - last_local_book_log_time_) < kLogInterval) {
+            return;
+        }
+        last_local_book_log_time_ = now_time;
+
+        initialized = local_book_initialized_;
+        bid_levels = local_bids_.size();
+        ask_levels = local_asks_.size();
+
+        if (!local_bids_.empty()) {
+            best_bid = local_bids_.begin()->first;
+            best_bid_qty = local_bids_.begin()->second;
+        }
+        if (!local_asks_.empty()) {
+            best_ask = local_asks_.begin()->first;
+            best_ask_qty = local_asks_.begin()->second;
+        }
+    }
+
+    std::cerr << "[MARKET DATA][LOCAL BOOK] init=" << (initialized ? "Y" : "N")
+              << " bid_levels=" << bid_levels
+              << " ask_levels=" << ask_levels
+              << " top_bid=" << best_bid << "@" << best_bid_qty
+              << " top_ask=" << best_ask << "@" << best_ask_qty
+              << std::endl;
 }
 
 void MarketDataFeed::notify_error(const std::string& error_message) {

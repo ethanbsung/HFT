@@ -925,7 +925,7 @@ TEST_F(IntegrationTest, SubscriptionManagementDuringConnection) {
     
     // Sample Advanced Trade messages that were causing the parsing errors
     std::string l2_message = R"({
-        "channel": "l2_data",
+        "channel": "level2",
         "client_id": "",
         "timestamp": "2025-07-27T04:36:42.486060248Z",
         "sequence_num": 0,

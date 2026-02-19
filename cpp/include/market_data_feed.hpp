@@ -340,6 +340,9 @@ private:
     void rebuild_local_book_from_snapshot(const CoinbaseBookMessage& book);
     void apply_local_book_changes(const CoinbaseBookMessage& book);
     void publish_local_book(timestamp_t book_time);
+    void maybe_log_local_book();
+
+    timestamp_t last_local_book_log_time_{};
     
     // Performance tracking
     void update_statistics(CoinbaseMessageType msg_type);

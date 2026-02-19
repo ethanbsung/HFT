@@ -61,7 +61,7 @@ int main() {
         signal_config.max_inventory_skew_bps = 20.0; // Reasonable skewing limits
         
         // Initialize signal engine
-        hft::SignalEngine signal_engine(memory_manager, latency_tracker, signal_config);
+        hft::SignalEngine signal_engine(latency_tracker, signal_config);
         
         hft::RiskLimits risk_limits;
         risk_limits.max_position = 10.0;   // Match signal engine position limits

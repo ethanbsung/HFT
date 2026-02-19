@@ -25,7 +25,7 @@ protected:
         order_manager_ = std::make_unique<OrderManager>(*memory_manager_, *latency_tracker_, risk_limits_);
         orderbook_engine_ = std::make_unique<OrderBookEngine>(*memory_manager_, *latency_tracker_);
         
-        signal_engine_ = std::make_unique<SignalEngine>(*memory_manager_, *latency_tracker_, config_);
+        signal_engine_ = std::make_unique<SignalEngine>(*latency_tracker_, config_);
         
         // Set up component references
         signal_engine_->set_order_manager(order_manager_.get());

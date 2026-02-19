@@ -5,7 +5,6 @@
 #include "latency_tracker.hpp"
 #include "orderbook_engine.hpp"
 #include "order_manager.hpp"
-#include "market_data_feed.hpp"
 #include <functional>
 #include <atomic>
 #include <mutex>
@@ -20,7 +19,6 @@ namespace hft {
 // Forward declarations
 class OrderBookEngine;
 class OrderManager;
-class MarketDataFeed;
 
 /**
  * Market making quote side
@@ -198,21 +196,6 @@ struct DepthMetrics {
 };
 
 /**
- * Current market state snapshot (reduces atomic loads)
- */
-struct MarketState {
-    price_t mid_price;
-    double spread_bps;
-    position_t current_position;
-    double current_pnl;
-    double realized_pnl;
-    double max_drawdown;
-    
-    MarketState() : mid_price(0.0), spread_bps(0.0), current_position(0.0),
-                    current_pnl(0.0), realized_pnl(0.0), max_drawdown(0.0) {}
-};
-
-/**
  * High-Performance Market Making Signal Engine
  * 
  * Design Goals:
@@ -225,8 +208,7 @@ struct MarketState {
  */
 class SignalEngine {
 public:
-    explicit SignalEngine(MemoryManager& memory_manager,
-                         LatencyTracker& latency_tracker,
+    explicit SignalEngine(LatencyTracker& latency_tracker,
                          const MarketMakingConfig& config = MarketMakingConfig());
     
     ~SignalEngine();
@@ -246,18 +228,6 @@ public:
      * PERFORMANCE: Target < 1 microsecond
      */
     void process_market_data_update(const TopOfBook& top_of_book);
-    
-    /**
-     * Process trade execution and update internal state
-     * PERFORMANCE: Target < 500 nanoseconds
-     */
-    void process_trade_execution(const TradeExecution& trade);
-    
-    /**
-     * Process market depth update for quote optimization
-     * PERFORMANCE: Target < 1 microsecond
-     */
-    void process_market_depth_update(const MarketDepth& depth);
     
     /**
      * Generate trading signals based on current market conditions
@@ -295,31 +265,9 @@ public:
     bool should_replace_quote(QuoteSide side, price_t current_price, price_t new_price);
     
     // =========================================================================
-    // RISK MANAGEMENT OPERATIONS
-    // =========================================================================
-    
-    /**
-     * Check pre-trade risk before generating signals
-     * PERFORMANCE: Target < 500 nanoseconds
-     */
-    bool check_pre_trade_risk(const TradingSignal& signal);
-    
-    /**
-     * Update risk metrics based on market data
-     * PERFORMANCE: Target < 300 nanoseconds
-     */
-    void update_risk_metrics(const TopOfBook& market_data);
-    
-    /**
-     * Check position limits and risk constraints
-     * PERFORMANCE: Target < 200 nanoseconds
-     */
-    bool check_position_limits(Side side, quantity_t quantity);
-    
-    // =========================================================================
     // CONFIGURATION AND CONTROL
     // =========================================================================
-    
+
     /**
      * Start the signal engine
      */
@@ -344,11 +292,6 @@ public:
      * Set order manager reference
      */
     void set_order_manager(OrderManager* order_manager);
-    
-    /**
-     * Set market data feed reference
-     */
-    void set_market_data_feed(MarketDataFeed* market_data_feed);
     
     // =========================================================================
     // CALLBACK MANAGEMENT
@@ -389,24 +332,9 @@ public:
     std::vector<MarketMakingQuote> get_active_quotes() const;
     
     /**
-     * Get current position and P&L
-     */
-    PositionInfo get_position_info() const;
-    
-    /**
      * Print performance report
      */
     void print_performance_report() const;
-    
-    /**
-     * Reset daily statistics
-     */
-    void reset_daily_stats();
-    
-    /**
-     * Check if signal engine is healthy
-     */
-    bool is_healthy() const;
     
     /**
      * Get signal generation latency statistics
@@ -498,14 +426,12 @@ private:
     // =========================================================================
     
     // Core components
-    MemoryManager& memory_manager_;
-    LatencyTracker* latency_tracker_;  // Changed from reference to pointer for safer cleanup
+    LatencyTracker* latency_tracker_;  // Stored as pointer for safe teardown checks
     MarketMakingConfig config_;
     
     // External component references
     OrderBookEngine* orderbook_engine_;
     OrderManager* order_manager_;
-    MarketDataFeed* market_data_feed_;
     
     // Market making state
     std::atomic<bool> is_running_;
@@ -519,17 +445,6 @@ private:
     
     // Market state
     TopOfBook current_top_of_book_;
-    MarketDepth current_market_depth_;
-    std::atomic<price_t> last_mid_price_;
-    std::atomic<price_t> last_spread_bps_;
-    
-    // Position and P&L tracking
-    std::atomic<position_t> current_position_;
-    std::atomic<price_t> current_pnl_;
-    std::atomic<price_t> realized_pnl_;
-    std::atomic<price_t> position_avg_price_;
-    std::atomic<price_t> peak_equity_;
-    std::atomic<price_t> max_drawdown_;
     
     // Statistics and monitoring
     mutable std::mutex stats_mutex_;
@@ -539,7 +454,6 @@ private:
     SignalCallback signal_callback_;
     QuoteUpdateCallback quote_update_callback_;
     RiskAlertCallback risk_alert_callback_;
-    std::function<void(const TradeExecution&)> trade_execution_callback_;
     
     // Performance tracking
     mutable std::queue<timestamp_t> recent_signals_;
@@ -551,81 +465,11 @@ private:
     // =========================================================================
     // PRIVATE HELPER METHODS
     // =========================================================================
-    
-    /**
-     * Initialize market making state
-     */
-    void initialize_market_making_state();
-    
-    /**
-     * Update quote state based on market conditions
-     */
-    void update_quote_state(const TopOfBook& top_of_book);
-    
-    /**
-     * Update quotes after a trade execution
-     */
-    void update_quotes_after_trade(const TradeExecution& trade);
-    
-    /**
-     * Calculate spread-based quote adjustments
-     */
-    void calculate_spread_adjustments(price_t& bid_price, price_t& ask_price);
-    
-    /**
-     * Track signal generation performance
-     */
-    void track_signal_generation_latency(timestamp_t start_time);
-    
+
     /**
      * Notify callbacks of signal generation
      */
     void notify_signal_generated(const TradingSignal& signal);
-    
-    /**
-     * Notify callbacks of quote updates
-     */
-    void notify_quote_updated(const MarketMakingQuote& quote);
-    
-    /**
-     * Validate market making configuration
-     */
-    bool validate_config(const MarketMakingConfig& config) const;
-    
-    /**
-     * Check if market conditions are suitable for quoting
-     */
-    bool is_market_suitable_for_quoting() const;
-    
-    /**
-     * Calculate market volatility for spread adjustment
-     */
-    double calculate_market_volatility() const;
-    
-    /**
-     * Update position and P&L tracking
-     */
-    void update_position_tracking(const TradeExecution& trade);
-    
-    /**
-     * Update unrealized P&L based on current market price
-     */
-    void update_unrealized_pnl();
-    
-    /**
-     * Calculate realized and unrealized P&L
-     */
-    void calculate_pnl_metrics();
-    
-    /**
-     * Check for risk violations
-     */
-    bool check_risk_violations();
-    
-    /**
-     * Emergency shutdown procedures
-     */
-    void emergency_shutdown(const std::string& reason);
     
     // =========================================================================
     // DEPTH ANALYSIS METHODS
@@ -635,115 +479,6 @@ private:
      * Detect significant changes in market depth
      */
     bool detect_significant_depth_change(const MarketDepth& depth);
-    
-    /**
-     * Calculate optimal quotes from depth analysis
-     */
-    void calculate_optimal_quotes_from_depth(const MarketDepth& depth, DepthMetrics& metrics);
-    
-    /**
-     * Calculate optimal bid price based on depth
-     */
-    price_t calculate_optimal_bid_price(const MarketDepth& depth, price_t mid_price);
-    
-    /**
-     * Calculate optimal ask price based on depth
-     */
-    price_t calculate_optimal_ask_price(const MarketDepth& depth, price_t mid_price);
-    
-    /**
-     * Calculate optimal bid size based on depth and metrics
-     */
-    quantity_t calculate_optimal_bid_size(const MarketDepth& depth, const DepthMetrics& metrics);
-    
-    /**
-     * Calculate optimal ask size based on depth and metrics
-     */
-    quantity_t calculate_optimal_ask_size(const MarketDepth& depth, const DepthMetrics& metrics);
-    
-    /**
-     * Update quote strategy based on depth analysis
-     */
-    void update_quote_strategy_from_depth(const DepthMetrics& metrics);
-    
-    /**
-     * Check for market pressure indicators
-     */
-    void check_market_pressure_indicators(const DepthMetrics& metrics);
-    
-    /**
-     * Optimize quote placement based on depth
-     */
-    void optimize_quote_placement(const DepthMetrics& metrics);
-    
-    /**
-     * Update statistics with depth information
-     */
-    void update_depth_statistics(const DepthMetrics& metrics);
-    
-    // =========================================================================
-    // OPTIMIZATION HELPER METHODS
-    // =========================================================================
-    
-    /**
-     * Get current market state snapshot (reduces atomic loads)
-     */
-    MarketState get_current_market_state() const;
-    
-    /**
-     * Validate market data (consolidates validation logic)
-     */
-    bool is_valid_market_data() const;
-    
-    /**
-     * Check position limits (consolidates position logic)
-     */
-    bool check_position_limit(position_t additional_position) const;
-    
-    /**
-     * Check P&L limits (consolidates P&L logic)
-     */
-    bool check_pnl_limits() const;
-    
-    /**
-     * Check drawdown limits (consolidates drawdown logic)
-     */
-    bool check_drawdown_limits() const;
-    
-    /**
-     * Check rate limits (consolidates rate limiting logic)
-     */
-    bool check_rate_limit() const;
-    
-    /**
-     * Validate quote parameters (consolidates quote validation)
-     */
-    bool validate_quote_parameters(price_t price, quantity_t quantity, QuoteSide side) const;
-    
-    /**
-     * Find active quote by side (reduces quote lookup redundancy)
-     */
-    const MarketMakingQuote* find_active_quote(QuoteSide side) const;
-    
-    /**
-     * Update statistics atomically (consolidates stats updates)
-     */
-    void update_statistics_atomic(std::function<void(MarketMakingStats&)> update_func);
-    
-    /**
-     * Log risk violations consistently (consolidates logging)
-     */
-    void log_risk_violation(const std::string& violation_type, const std::string& details);
-    
-    /**
-     * Log risk warnings consistently (consolidates warning logging)
-     */
-    void log_risk_warning(const std::string& warning_type, const std::string& details);
-    
-    /**
-     * Validate signal age (consolidates timestamp validation)
-     */
-    bool is_signal_fresh(const TradingSignal& signal, uint64_t max_age_ms = 1000) const;
     
     // =========================================================================
     // SIGNAL GENERATION METHODS
@@ -755,13 +490,6 @@ private:
     void generate_quote_signals(std::vector<TradingSignal>& signals,
                                price_t bid_price, price_t ask_price,
                                quantity_t bid_size, quantity_t ask_size);
-    
-    /**
-     * Generate quote modification signals
-     */
-    void generate_modification_signals(std::vector<TradingSignal>& signals,
-                                     price_t optimal_bid_price, price_t optimal_ask_price,
-                                     quantity_t optimal_bid_size, quantity_t optimal_ask_size);
     
     /**
      * Apply rate limiting to signals
