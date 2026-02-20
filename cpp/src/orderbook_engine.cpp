@@ -835,79 +835,12 @@ void OrderBookEngine::clear_book() {
     best_bid_qty_.store(0.0, std::memory_order_relaxed);
     best_ask_qty_.store(0.0, std::memory_order_relaxed);
     last_trade_price_.store(0.0, std::memory_order_relaxed);
-    
-    std::cout << "[ORDER BOOK] Cleared book for " << symbol_ << std::endl;
 }
 
 OrderBookStats OrderBookEngine::get_statistics() const {
     // Return comprehensive statistics for performance monitoring
     std::lock_guard<std::mutex> lock(stats_mutex_);
     return statistics_;
-}
-
-void OrderBookEngine::print_book_state(uint32_t levels) const {
-    // CRITICAL IMPLEMENTATION: Print current book state for debugging
-    
-    std::lock_guard<std::mutex> lock(book_mutex_);
-    
-    std::cout << "\n=== ORDER BOOK STATE: " << symbol_ << " ===" << std::endl;
-    std::cout << "Timestamp: " << std::chrono::duration_cast<std::chrono::milliseconds>(
-        now().time_since_epoch()).count() << "ms" << std::endl;
-    
-    // Print ask levels (highest to lowest for visual clarity)
-    std::cout << "\nASKS (Sell Orders):" << std::endl;
-    std::cout << "Price     | Quantity  | Orders" << std::endl;
-    std::cout << "----------|-----------|-------" << std::endl;
-    
-    uint32_t ask_count = 0;
-    for (auto it = asks_.rbegin(); it != asks_.rend() && ask_count < levels; ++it, ++ask_count) {
-        std::cout << std::fixed << std::setprecision(4) 
-                  << std::setw(9) << it->first << " | "
-                  << std::setw(9) << it->second.total_quantity << " | "
-                  << it->second.order_queue.size() << std::endl;
-    }
-    
-    // Print spread
-    price_t bid = best_bid_.load();
-    price_t ask = best_ask_.load();
-    if (bid > 0 && ask > 0) {
-        price_t spread = ask - bid;
-        price_t mid = (bid + ask) / 2.0;
-        double spread_bps = (spread / mid) * 10000.0;
-        std::cout << "\n--- SPREAD: " << std::fixed << std::setprecision(4) 
-                  << spread << " (" << std::setprecision(1) << spread_bps << " bps) ---" << std::endl;
-    }
-    
-    // Print bid levels (highest to lowest)
-    std::cout << "\nBIDS (Buy Orders):" << std::endl;
-    std::cout << "Price     | Quantity  | Orders" << std::endl;
-    std::cout << "----------|-----------|-------" << std::endl;
-    
-    uint32_t bid_count = 0;
-    for (auto it = bids_.rbegin(); it != bids_.rend() && bid_count < levels; ++it, ++bid_count) {
-        std::cout << std::fixed << std::setprecision(4)
-                  << std::setw(9) << it->first << " | "
-                  << std::setw(9) << it->second.total_quantity << " | "
-                  << it->second.order_queue.size() << std::endl;
-    }
-    
-    // Print summary statistics
-    auto stats = get_statistics();
-    std::cout << "\n=== SUMMARY STATISTICS ===" << std::endl;
-    std::cout << "Total Orders Processed: " << stats.total_orders_processed << std::endl;
-    std::cout << "Total Trades: " << stats.total_trades << std::endl;
-    std::cout << "Total Volume: " << std::fixed << std::setprecision(2) << stats.total_volume << std::endl;
-    std::cout << "Active Orders: " << active_orders_.size() << std::endl;
-    std::cout << "Price Levels: " << (bids_.size() + asks_.size()) << 
-                 " (" << bids_.size() << " bids, " << asks_.size() << " asks)" << std::endl;
-    
-    if (bid > 0 && ask > 0) {
-        std::cout << "Best Bid: " << std::fixed << std::setprecision(4) << bid << std::endl;
-        std::cout << "Best Ask: " << std::fixed << std::setprecision(4) << ask << std::endl;
-        std::cout << "Mid Price: " << std::fixed << std::setprecision(4) << (bid + ask) / 2.0 << std::endl;
-    }
-    
-    std::cout << "=================================" << std::endl;
 }
 
 // =============================================================================
@@ -966,91 +899,11 @@ LatencyStatistics OrderBookEngine::get_matching_latency() const {
     return latency_tracker_.get_statistics(LatencyType::ORDER_BOOK_UPDATE);
 }
 
-void OrderBookEngine::print_performance_report() const {
-    // Print comprehensive performance report for analysis
-    
-    std::cout << "\n" << std::string(60, '=') << std::endl;
-    std::cout << " ORDER BOOK ENGINE PERFORMANCE REPORT" << std::endl;
-    std::cout << std::string(60, '=') << std::endl;
-    
-    auto stats = get_statistics();
-    auto latency_stats = get_matching_latency();
-    
-    // Print detailed statistics
-    std::cout << " TRADING STATISTICS:" << std::endl;
-    std::cout << "   Total Orders Processed: " << stats.total_orders_processed << std::endl;
-    std::cout << "   Total Trades Executed: " << stats.total_trades << std::endl;
-    std::cout << "   Total Volume Traded: " << std::fixed << std::setprecision(2) 
-              << stats.total_volume << std::endl;
-    
-    if (stats.total_trades > 0) {
-        std::cout << "   Average Trade Size: " << std::fixed << std::setprecision(2)
-                  << (stats.total_volume / stats.total_trades) << std::endl;
-    }
-    
-    std::cout << "\n PERFORMANCE METRICS:" << std::endl;
-    std::cout << "   Average Latency: " << std::fixed << std::setprecision(1) 
-              << latency_stats.mean_us << " us" << std::endl;
-    std::cout << "   95th Percentile: " << std::fixed << std::setprecision(1) 
-              << latency_stats.p95_us << " us" << std::endl;
-    std::cout << "   99th Percentile: " << std::fixed << std::setprecision(1) 
-              << latency_stats.p99_us << " us" << std::endl;
-    std::cout << "   Maximum Latency: " << std::fixed << std::setprecision(1) 
-              << latency_stats.max_us << " us" << std::endl;
-    
-    // Current market state
-    std::cout << "\n CURRENT MARKET STATE:" << std::endl;
-    auto tob = get_top_of_book();
-    if (tob.bid_price > 0 && tob.ask_price > 0) {
-        std::cout << "   Best Bid: " << std::fixed << std::setprecision(4) << tob.bid_price 
-                  << " (" << tob.bid_quantity << ")" << std::endl;
-        std::cout << "   Best Ask: " << std::fixed << std::setprecision(4) << tob.ask_price 
-                  << " (" << tob.ask_quantity << ")" << std::endl;
-        std::cout << "   Mid Price: " << std::fixed << std::setprecision(4) << tob.mid_price << std::endl;
-        std::cout << "   Spread: " << std::fixed << std::setprecision(1) << get_spread_bps() << " bps" << std::endl;
-    } else {
-        std::cout << "   No market data available" << std::endl;
-    }
-    
-    // Add more metrics for HFT analysis
-    std::cout << "\n HFT METRICS:" << std::endl;
-    std::cout << "   Price Levels: " << (bids_.size() + asks_.size()) << std::endl;
-    std::cout << "   Active Orders: " << active_orders_.size() << std::endl;
-    std::cout << "   Market Crossed: " << (is_market_crossed() ? "YES " : "NO") << std::endl;
-    
-    // Performance targets for HFT
-    std::cout << "\n HFT PERFORMANCE TARGETS:" << std::endl;
-    std::cout << "   Target Add Order: < 500ns" << std::endl;
-    std::cout << "   Target Cancel: < 200ns" << std::endl;
-    std::cout << "   Target Modify: < 300ns" << std::endl;
-    std::cout << "   Current Avg: " << std::fixed << std::setprecision(0) 
-              << latency_stats.mean_us * 1000 << "ns" << std::endl;
-    
-    std::cout << std::string(60, '=') << std::endl;
-}
-
 void OrderBookEngine::reset_performance_counters() {
     // Reset all performance counters for new session
     std::lock_guard<std::mutex> lock(stats_mutex_);
     
     statistics_ = OrderBookStats();
-    
-    std::cout << "[ORDER BOOK] Performance counters reset for " << symbol_ << std::endl;
-}
-
-void OrderBookEngine::cleanup_cancelled_orders() {
-    // Periodically clean up cancelled orders set to prevent memory growth
-    std::lock_guard<std::mutex> lock(book_mutex_);
-    
-    size_t original_size = cancelled_orders_.size();
-    
-    // Clear the set - orders are already removed from active tracking
-    cancelled_orders_.clear();
-    
-    if (original_size > 0) {
-        std::cout << "[ORDER BOOK] Cleaned up " << original_size 
-                  << " cancelled order IDs for " << symbol_ << std::endl;
-    }
 }
 
 // =============================================================================
@@ -1122,38 +975,25 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
                     
                     // Remove passive order if completely filled
                     if (passive_order.remaining_quantity <= 0) {
-                        std::cout << "[DEBUG] Order " << passive_order_id << " completely filled, removing" << std::endl;
                         level.order_queue.pop();
                         active_orders_.erase(passive_order_id);
                         order_to_price_.erase(passive_order_id);
                         order_to_quantity_.erase(passive_order_id);
                     } else {
                         // Order partially filled - update tracking map and keep in queue
-                        std::cout << "[DEBUG] Order " << passive_order_id 
-                                  << " partially filled, remaining=" << passive_order.remaining_quantity << std::endl;
                         order_to_quantity_[passive_order_id] = passive_order.remaining_quantity;
                         
                         // Recalculate level total_quantity to ensure consistency
-                        quantity_t old_total = level.total_quantity;
                         level.total_quantity = 0.0;
                         std::queue<uint64_t> temp_queue = level.order_queue;
-                        size_t queue_size = 0;
                         while (!temp_queue.empty()) {
                             uint64_t oid = temp_queue.front();
                             temp_queue.pop();
-                            queue_size++;
                             auto order_it = active_orders_.find(oid);
                             if (order_it != active_orders_.end()) {
                                 level.total_quantity += order_it->second.remaining_quantity;
-                                std::cout << "[DEBUG] Queue order " << oid 
-                                          << " remaining_qty=" << order_it->second.remaining_quantity << std::endl;
-                            } else {
-                                std::cout << "[DEBUG] Queue order " << oid << " NOT FOUND in active_orders!" << std::endl;
                             }
                         }
-                        std::cout << "[DEBUG] Level recalc: old_total=" << old_total 
-                                  << " new_total=" << level.total_quantity 
-                                  << " queue_size=" << queue_size << std::endl;
                         
                         // Stop processing this level since the first order is partially filled
                         break;
@@ -1164,13 +1004,9 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
             }
             
             // Remove price level if no more orders
-            std::cout << "[DEBUG] Checking level removal: queue_empty=" << level.order_queue.empty() 
-                      << " total_qty=" << level.total_quantity << std::endl;
             if (level.order_queue.empty() || level.total_quantity <= 0) {
-                std::cout << "[DEBUG] REMOVING price level $" << level_price << std::endl;
                 it = matching_side.erase(it);
             } else {
-                std::cout << "[DEBUG] KEEPING price level $" << level_price << std::endl;
                 ++it;
             }
         }
@@ -1273,58 +1109,6 @@ MatchResult OrderBookEngine::match_order_internal(const Order& order,
         return MatchResult::PARTIAL_FILL;
     } else {
         return MatchResult::NO_MATCH;
-    }
-}
-
-void OrderBookEngine::execute_trade(uint64_t aggressor_id, uint64_t passive_id, 
-                                   price_t price, quantity_t quantity, Side aggressor_side) {
-    // OPTIMIZED IMPLEMENTATION: Execute a trade between two orders
-    
-    
-    // Create trade execution directly for better performance
-    TradeExecution trade;
-    trade.trade_id = next_trade_id_.fetch_add(1);
-    trade.aggressor_order_id = aggressor_id;
-    trade.passive_order_id = passive_id;
-    trade.price = price;
-    trade.quantity = quantity;
-    trade.aggressor_side = aggressor_side;
-    trade.timestamp = now();
-    
-    // Update statistics
-    {
-        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
-        statistics_.total_trades++;
-        statistics_.total_volume += quantity;
-        statistics_.last_trade_time = trade.timestamp;
-    }
-    
-    
-    // Notify callbacks
-    if (trade_callback_) {
-        trade_callback_(trade);
-    }
-    
-    // Update OrderManager with fills
-    if (order_manager_) {
-        // Notify aggressor
-        order_manager_->handle_fill(aggressor_id, quantity, price, trade.timestamp, true);
-        // Notify passive order
-        order_manager_->handle_fill(passive_id, quantity, price, trade.timestamp, true);
-    }
-    
-    // Update last trade price
-    last_trade_price_.store(price);
-}
-
-void OrderBookEngine::notify_matching_performance(const Order& order, double latency_us) {
-    // Track matching performance for optimization
-    latency_tracker_.add_order_placement_latency(latency_us);
-    
-    // Add to latency tracker for detailed analysis
-    if (latency_us > 1000.0) { // > 1ms is slow for HFT
-        std::cout << " Slow matching detected: " << latency_us << "us for order " 
-                  << order.order_id << std::endl;
     }
 }
 
@@ -1503,13 +1287,6 @@ void OrderBookEngine::notify_depth_update() {
     }
 }
 
-void OrderBookEngine::track_matching_latency(timestamp_t start_time) {
-    // TODO: Track matching performance
-    auto end_time = now();
-    auto latency_us = time_diff_us(start_time, end_time);
-    // TODO: Add to latency tracker
-}
-
 void OrderBookEngine::update_statistics(const TradeExecution& trade) {
     // Update comprehensive statistics efficiently
     std::lock_guard<std::mutex> lock(stats_mutex_);
@@ -1566,31 +1343,10 @@ price_t OrderBookEngine::get_best_price(BookSide side) const {
     }
 }
 
-quantity_t OrderBookEngine::get_quantity_at_price(BookSide side, price_t price) const {
-    // Get total quantity at specific price level
-    std::lock_guard<std::mutex> lock(book_mutex_);
-    
-    // Handle different map types for bids (std::greater) and asks (std::less)
-    if (side == BookSide::BID) {
-        auto level_it = bids_.find(price);
-        if (level_it != bids_.end()) {
-            return level_it->second.total_quantity;
-        }
-    } else {
-        auto level_it = asks_.find(price);
-        if (level_it != asks_.end()) {
-            return level_it->second.total_quantity;
-        }
-    }
-    
-    return 0.0;
-}
-
 // Market data integration methods
 
 void OrderBookEngine::process_market_data_trade(const TradeExecution& trade) {
     ScopedCoutSilencer silence_hot_path(!kEnableHotPathLogging);
-    std::cout << " DEBUG: process_market_data_trade called with trade size=" << trade.quantity << " @ $" << trade.price << std::endl;
     std::lock_guard<std::mutex> lock(book_mutex_);
     
     // Update statistics
@@ -1605,8 +1361,6 @@ void OrderBookEngine::process_market_data_trade(const TradeExecution& trade) {
         trade_callback_(trade);
     }
     
-    std::cout << " REAL TRADE: " << (trade.aggressor_side == Side::BUY ? "BUY" : "SELL") 
-              << " " << trade.quantity << " @ $" << trade.price << std::endl;
     
     // QUEUE-BASED FILL SIMULATION: Process fills based on queue position
     process_fills_from_queue_positions(trade);
@@ -1654,9 +1408,6 @@ void OrderBookEngine::process_fills_from_queue_positions(const TradeExecution& t
             fill_trade.aggressor_side = trade.aggressor_side;
             fill_trade.timestamp = now();
             
-            std::cout << " FILL: Order " << order_id 
-                      << " filled " << fill_qty << " @ $" << order.price 
-                      << (is_final_fill ? " (COMPLETE)" : " (PARTIAL)") << std::endl;
             
             // Notify fill
             if (order_manager_) {
@@ -1683,8 +1434,6 @@ void OrderBookEngine::simulate_market_order_from_trade(const TradeExecution& tra
     // REAL MARKET DATA APPROACH: Process actual trade to update FIFO queue positions
     // This mimics the Python execution simulator's _process_trade_update() logic
     
-    std::cout << " PROCESSING REAL TRADE: " << (trade.aggressor_side == Side::BUY ? "BUY" : "SELL") 
-              << " " << trade.quantity << " @ $" << trade.price << std::endl;
     
     // Process all our resting orders to update queue positions based on this real trade
     std::vector<uint64_t> orders_to_fill;
@@ -1731,11 +1480,6 @@ void OrderBookEngine::simulate_market_order_from_trade(const TradeExecution& tra
                         fill_qty = std::max(0.0, fill_qty);
                         
                         if (fill_qty > 0.0) {
-                            std::cout << " FILL CALCULATION: Order " << order_id 
-                                      << " Old queue: " << old_queue 
-                                      << " Trade: " << trade.quantity 
-                                      << " Volume reached us: " << volume_that_reached_us 
-                                      << " Fill qty: " << fill_qty << std::endl;
                             
                             // Schedule this order for filling (outside the lock)
                             orders_to_fill.push_back(order_id);
@@ -1744,8 +1488,6 @@ void OrderBookEngine::simulate_market_order_from_trade(const TradeExecution& tra
                             if (fill_qty < order.remaining_quantity) {
                                 order.remaining_quantity -= fill_qty;
                                 order.queue_ahead = 0.0; // Now at front of queue for remaining quantity
-                                std::cout << " PARTIAL FILL: " << fill_qty << " filled, " 
-                                          << order.remaining_quantity << " remaining" << std::endl;
                             }
                         }
                     }
@@ -1767,10 +1509,6 @@ void OrderBookEngine::simulate_market_order_from_trade(const TradeExecution& tra
             if (fill_qty > 0.0) {
                 bool is_final_fill = (order.remaining_quantity <= 0.0);
                 
-                std::cout << " TRIGGERING FILL: Order " << order_id 
-                          << " " << (order.side == Side::BUY ? "BUY" : "SELL")
-                          << " " << fill_qty << " @ $" << trade.price 
-                          << " Final: " << (is_final_fill ? "YES" : "NO") << std::endl;
                 
                 // Notify order manager about the fill
                 if (order_manager_) {
@@ -1885,8 +1623,6 @@ void OrderBookEngine::track_queue_position(uint64_t order_id, price_t price, Sid
     pos.queue_ahead = queue_ahead;
     queue_positions_[order_id] = pos;
     
-    std::cout << " QUEUE TRACK: Order " << order_id << " " << (side == Side::BUY ? "BID" : "ASK") 
-              << " $" << price << " x " << quantity << " queue_ahead=" << pos.queue_ahead << std::endl;
 }
 
 void OrderBookEngine::track_queue_position_with_exact_position(uint64_t order_id, price_t price, Side side, quantity_t quantity, quantity_t exact_queue_ahead) {
@@ -1903,8 +1639,6 @@ void OrderBookEngine::track_queue_position_with_exact_position(uint64_t order_id
     
     queue_positions_[order_id] = pos;
     
-    std::cout << " PRECISE QUEUE TRACK: Order " << order_id << " " << (side == Side::BUY ? "BID" : "ASK") 
-              << " $" << price << " x " << quantity << " queue_ahead=" << pos.queue_ahead << std::endl;
 }
 
 void OrderBookEngine::update_queue_positions_from_trade(const TradeExecution& trade) {

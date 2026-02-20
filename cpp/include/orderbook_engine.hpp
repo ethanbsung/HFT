@@ -202,11 +202,6 @@ public:
      */
     OrderBookStats get_statistics() const;
     
-    /**
-     * Print current book state (for debugging)
-     */
-    void print_book_state(uint32_t levels = 5) const;
-    
     // =========================================================================
     // INTEGRATION WITH ORDER MANAGER
     // =========================================================================
@@ -244,19 +239,9 @@ public:
     LatencyStatistics get_matching_latency() const;
     
     /**
-     * Print performance report
-     */
-    void print_performance_report() const;
-    
-    /**
      * Reset performance counters
      */
     void reset_performance_counters();
-    
-    /**
-     * Clean up cancelled orders set (for memory management)
-     */
-    void cleanup_cancelled_orders();
     
     
     // Simulation methods
@@ -322,9 +307,6 @@ private:
     
     // Matching engine core
     MatchResult match_order_internal(const Order& order, std::vector<TradeExecution>& executions);
-    void execute_trade(uint64_t aggressor_id, uint64_t passive_id, price_t price, 
-                      quantity_t quantity, Side aggressor_side);
-    
     // Price level management
     void add_to_price_level(BookSide side, price_t price, const Order& order);
     void remove_from_price_level(BookSide side, price_t price, uint64_t order_id, 
@@ -340,7 +322,6 @@ private:
     void notify_depth_update();
     
     // Performance tracking
-    void track_matching_latency(timestamp_t start_time);
     void update_statistics(const TradeExecution& trade);
     
     // Validation helpers
@@ -348,9 +329,6 @@ private:
     bool is_valid_price(price_t price) const;
     bool is_valid_quantity(quantity_t quantity) const;
     
-    // Performance tracking
-    void notify_matching_performance(const Order& order, double latency_us);
-
     // Utility functions (inlined for performance)
     inline BookSide get_book_side(Side order_side) const {
         return (order_side == Side::BUY) ? BookSide::BID : BookSide::ASK;
@@ -361,7 +339,6 @@ private:
     }
     
     price_t get_best_price(BookSide side) const;
-    quantity_t get_quantity_at_price(BookSide side, price_t price) const;
 
     // Simple helper methods for book access
     std::map<price_t, PriceLevel, std::greater<price_t>>& get_bids() { return bids_; }

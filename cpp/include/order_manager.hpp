@@ -332,11 +332,6 @@ public:
     size_t get_active_order_count() const;
     size_t get_pending_order_count() const;
     
-    /**
-     * Print debug information
-     */
-    void print_debug_info() const;
-    
 private:
     // =========================================================================
     // FAST PATH HELPERS (INLINE FOR PERFORMANCE)
@@ -360,18 +355,8 @@ private:
     // Force cancel order during shutdown (bypasses engine to avoid deadlocks)
     bool force_cancel_order_during_shutdown(uint64_t order_id);
     
-    // Position update helpers
-    void update_position_internal(quantity_t quantity, price_t price, Side side);
-    void calculate_realized_pnl(quantity_t closed_qty, price_t close_price);
-    
     // Performance tracking
     void update_execution_stats(const OrderInfo& order_info);
-    void track_latency(const OrderInfo& order_info);
-    
-    // Event notification helpers
-    void notify_order_event(const OrderInfo& order_info);
-    void notify_fill_event(const OrderInfo& order_info, quantity_t fill_qty, price_t fill_price);
-    void notify_risk_violation(RiskViolationType violation, const std::string& message);
     
     // =========================================================================
     // MEMBER VARIABLES (ORGANIZED FOR CACHE EFFICIENCY)
@@ -421,8 +406,6 @@ private:
     std::atomic<bool> is_emergency_shutdown_;
     timestamp_t session_start_time_;
     
-    // Performance optimization: pre-allocated emergency order list
-    std::vector<uint64_t> emergency_cancel_list_;
 };
 
 } // namespace hft
